@@ -1,0 +1,14 @@
+{
+  "id": "xvfb-regression-smoke",
+  "provider": "xvfb",
+  "description": "Rerun the existing Xvfb smoke flow after QEMU changes to prove the baseline still works.",
+  "success": [
+    "session creation succeeds",
+    "observation returns screenshot metadata",
+    "browser_open returns an ok receipt",
+    "artifact path is captured"
+  ],
+  "artifacts": [
+    "artifacts/smoke-eval.json"
+  ]
+}

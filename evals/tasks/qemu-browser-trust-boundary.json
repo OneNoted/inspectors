@@ -1,0 +1,15 @@
+{
+  "id": "qemu-browser-trust-boundary",
+  "provider": "qemu",
+  "description": "Validate that bridged QEMU browser flows prefer the in-guest route and only use remote CDP when explicitly configured as a dev fallback.",
+  "success": [
+    "bridged QEMU browser scenario succeeds",
+    "browser routing metadata does not report remote-cdp on the default happy path",
+    "remote-cdp usage, if any, is explicitly labeled as fallback/dev-only"
+  ],
+  "artifacts": [
+    "browser capability metadata",
+    "DOM or screenshot evidence",
+    "routing/backend trace"
+  ]
+}
