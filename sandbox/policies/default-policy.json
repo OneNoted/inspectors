@@ -1,9 +1,11 @@
 {
-  "desktopInput": "allow",
+  "desktop_input": "allow",
   "shell": "allow",
-  "filesystem": "allow-within-session",
+  "filesystem": "allow",
   "browser": "allow",
-  "network": "egress-allow",
-  "hostDesktopControl": "deny",
-  "hostFilesystemMounts": "deny"
+  "host_desktop": "deny",
+  "provider": {
+    "xvfb": "allow",
+    "qemu": "planned"
+  }
 }

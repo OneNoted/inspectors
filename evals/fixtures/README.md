@@ -1,7 +1,3 @@
 # Eval Fixtures
 
-Populate this directory with deterministic sandbox assets:
-- seeded browser profile data
-- GUI test applications
-- sample repositories/files
-- spreadsheet/form fixtures
+This directory is reserved for deterministic fixture assets used by browser, file-terminal, and GUI validation tasks.
