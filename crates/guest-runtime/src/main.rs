@@ -1,5 +1,5 @@
 #![allow(clippy::result_large_err)]
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,10 +13,12 @@ use axum::{
     routing::{get, post},
 };
 use desktop_core::{
-    ActionRequest, CreateSessionRequest, RuntimeCapabilities, SessionRecord, StructuredError,
-    capability_descriptor,
+    ActionReceipt, ActionRequest, ArtifactRef, CreateSessionRequest, Observation,
+    RuntimeCapabilities, SessionRecord, StructuredError, capability_descriptor,
 };
 use linux_backend::{BackendOptions, LinuxBackend};
+use reqwest::Client;
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
@@ -30,17 +32,51 @@ struct AppState {
     artifacts_root: PathBuf,
     browser_command: String,
     runtime_base_url: String,
+    http_client: Client,
+    qemu_viewer_port: u16,
+    qemu_guest_runtime_port: u16,
+    qemu_guest_display: String,
+    qemu_bridge_probe_timeout: Duration,
+    qemu_bridge_probe_interval: Duration,
 }
 
 struct SessionHandle {
     record: SessionRecord,
     backend: Option<LinuxBackend>,
     provider_handle: SessionProviderHandle,
+    remote_bridge: Option<RemoteBridgeHandle>,
 }
 
 enum SessionProviderHandle {
     Xvfb { child: Child },
+    ExistingDisplay,
     QemuDocker { container_name: String },
+}
+
+#[derive(Clone)]
+struct RemoteBridgeHandle {
+    base_url: String,
+    session_id: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct BridgeSessionResponse {
+    session: SessionRecord,
+}
+
+struct QemuBridgeMonitor {
+    sessions: Arc<Mutex<HashMap<String, SessionHandle>>>,
+    http_client: Client,
+    host_runtime_base_url: String,
+    guest_display: String,
+    browser_command: String,
+    session_id: String,
+    width: u32,
+    height: u32,
+    artifacts_dir: PathBuf,
+    remote_runtime_url: String,
+    timeout: Duration,
+    interval: Duration,
 }
 
 #[tokio::main]
@@ -53,12 +89,40 @@ async fn main() {
     );
     let browser_command = arg_value("--browser-command").unwrap_or_else(|| "firefox".to_string());
     let runtime_base_url = format!("http://127.0.0.1:{port}");
+    let qemu_viewer_port = std::env::var("ACU_QEMU_VIEWER_PORT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(8006);
+    let qemu_guest_runtime_port = std::env::var("ACU_QEMU_GUEST_RUNTIME_PORT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(port);
+    let qemu_guest_display =
+        std::env::var("ACU_QEMU_GUEST_DISPLAY").unwrap_or_else(|_| ":0".to_string());
+    let qemu_bridge_probe_timeout = Duration::from_millis(
+        std::env::var("ACU_QEMU_BRIDGE_TIMEOUT_MS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(45_000),
+    );
+    let qemu_bridge_probe_interval = Duration::from_millis(
+        std::env::var("ACU_QEMU_BRIDGE_INTERVAL_MS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1_000),
+    );
 
     let state = AppState {
         sessions: Arc::new(Mutex::new(HashMap::new())),
         artifacts_root,
         browser_command,
         runtime_base_url,
+        http_client: Client::new(),
+        qemu_viewer_port,
+        qemu_guest_runtime_port,
+        qemu_guest_display,
+        qemu_bridge_probe_timeout,
+        qemu_bridge_probe_interval,
     };
 
     let app = Router::new()
@@ -123,6 +187,7 @@ async fn create_session_impl(
 ) -> Result<SessionRecord, (StatusCode, Value)> {
     match request.provider.as_str() {
         "xvfb" => create_xvfb_session(state, request).await,
+        "display" => create_existing_display_session(state, request).await,
         "qemu" => create_qemu_session(state, request).await,
         other => Err((
             StatusCode::BAD_REQUEST,
@@ -208,6 +273,7 @@ async fn create_xvfb_session(
         runtime_base_url: Some(state.runtime_base_url.clone()),
         viewer_url: None,
         bridge_status: Some("runtime_ready".to_string()),
+        bridge_error: None,
     };
 
     state.sessions.lock().await.insert(
@@ -216,6 +282,66 @@ async fn create_xvfb_session(
             record: record.clone(),
             backend: Some(backend),
             provider_handle: SessionProviderHandle::Xvfb { child },
+            remote_bridge: None,
+        },
+    );
+
+    Ok(record)
+}
+
+async fn create_existing_display_session(
+    state: &AppState,
+    request: CreateSessionRequest,
+) -> Result<SessionRecord, (StatusCode, Value)> {
+    let session_id = Uuid::new_v4().to_string();
+    let display = request
+        .display
+        .clone()
+        .or_else(|| std::env::var("DISPLAY").ok())
+        .unwrap_or_else(|| ":0".to_string());
+    let browser_command = request
+        .browser_command
+        .clone()
+        .unwrap_or_else(|| state.browser_command.clone());
+    let artifacts_dir = state.artifacts_root.join(&session_id);
+    tokio::fs::create_dir_all(&artifacts_dir)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "code": "artifacts_dir_failed", "message": error.to_string() }),
+            )
+        })?;
+
+    let backend = LinuxBackend::new(BackendOptions {
+        display: display.clone(),
+        artifacts_dir: artifacts_dir.clone(),
+        browser_command: browser_command.clone(),
+    });
+    let record = SessionRecord {
+        id: session_id.clone(),
+        provider: "display".to_string(),
+        display: Some(display),
+        width: request.width,
+        height: request.height,
+        state: "running".to_string(),
+        created_at: chrono::Utc::now(),
+        artifacts_dir: artifacts_dir.to_string_lossy().to_string(),
+        capabilities: backend.capabilities(),
+        browser_command: Some(browser_command),
+        runtime_base_url: Some(state.runtime_base_url.clone()),
+        viewer_url: None,
+        bridge_status: Some("runtime_ready".to_string()),
+        bridge_error: None,
+    };
+
+    state.sessions.lock().await.insert(
+        session_id,
+        SessionHandle {
+            record: record.clone(),
+            backend: Some(backend),
+            provider_handle: SessionProviderHandle::ExistingDisplay,
+            remote_bridge: None,
         },
     );
 
@@ -274,6 +400,10 @@ async fn create_qemu_session(
         "--rm".to_string(),
         "--name".to_string(),
         container_name.clone(),
+        "-p".to_string(),
+        format!("127.0.0.1::{}", state.qemu_viewer_port),
+        "-p".to_string(),
+        format!("127.0.0.1::{}", state.qemu_guest_runtime_port),
         "-e".to_string(),
         format!("BOOT={boot}"),
         "-v".to_string(),
@@ -321,28 +451,47 @@ async fn create_qemu_session(
             }),
         ));
     }
-
-    let ip = docker_output(&[
-        "inspect",
-        "-f",
-        "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
-        &container_name,
-    ])
-    .await?
-    .trim()
-    .to_string();
-    if ip.is_empty() {
-        let _ = docker_output(&["rm", "-f", &container_name]).await;
-        return Err((
-            StatusCode::FAILED_DEPENDENCY,
-            json!({
-                "code": "qemu_container_ip_missing",
-                "message": "qemu container started but did not expose a bridge-network IP",
-            }),
-        ));
+    let viewer_url = match docker_mapped_port(&container_name, state.qemu_viewer_port).await? {
+        Some(port) => format!("http://127.0.0.1:{port}"),
+        None => {
+            let ip = docker_output(&[
+                "inspect",
+                "-f",
+                "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+                &container_name,
+            ])
+            .await?
+            .trim()
+            .to_string();
+            if ip.is_empty() {
+                let _ = docker_output(&["rm", "-f", &container_name]).await;
+                return Err((
+                    StatusCode::FAILED_DEPENDENCY,
+                    json!({
+                        "code": "qemu_container_ip_missing",
+                        "message": "qemu container started but did not expose a viewer port or bridge-network IP",
+                    }),
+                ));
+            }
+            format!("http://{ip}:{}", state.qemu_viewer_port)
+        }
+    };
+    let remote_runtime_url = docker_mapped_port(&container_name, state.qemu_guest_runtime_port)
+        .await?
+        .map(|port| format!("http://127.0.0.1:{port}"));
+    let mut capabilities = vec![
+        "vm".to_string(),
+        "viewer".to_string(),
+        "qemu_container".to_string(),
+    ];
+    if remote_runtime_url.is_some() {
+        capabilities.push("guest_runtime_http".to_string());
     }
-
-    let viewer_url = format!("http://{ip}:8006");
+    let bridge_status = if remote_runtime_url.is_some() {
+        "bridge_waiting".to_string()
+    } else {
+        "viewer_only".to_string()
+    };
     let record = SessionRecord {
         id: session_id.clone(),
         provider: "qemu".to_string(),
@@ -352,27 +501,153 @@ async fn create_qemu_session(
         state: "running".to_string(),
         created_at: chrono::Utc::now(),
         artifacts_dir: artifacts_dir.to_string_lossy().to_string(),
-        capabilities: vec![
-            "vm".to_string(),
-            "viewer".to_string(),
-            "qemu_container".to_string(),
-        ],
+        capabilities,
         browser_command: None,
         runtime_base_url: None,
         viewer_url: Some(viewer_url.clone()),
-        bridge_status: Some("viewer_only".to_string()),
+        bridge_status: Some(bridge_status),
+        bridge_error: None,
     };
 
     state.sessions.lock().await.insert(
-        session_id,
+        session_id.clone(),
         SessionHandle {
             record: record.clone(),
             backend: None,
             provider_handle: SessionProviderHandle::QemuDocker { container_name },
+            remote_bridge: remote_runtime_url
+                .as_ref()
+                .map(|base_url| RemoteBridgeHandle {
+                    base_url: base_url.clone(),
+                    session_id: None,
+                }),
         },
     );
 
+    if let Some(remote_runtime_url) = remote_runtime_url {
+        tokio::spawn(monitor_qemu_bridge(QemuBridgeMonitor {
+            sessions: state.sessions.clone(),
+            http_client: state.http_client.clone(),
+            host_runtime_base_url: state.runtime_base_url.clone(),
+            guest_display: state.qemu_guest_display.clone(),
+            browser_command: state.browser_command.clone(),
+            session_id,
+            width: request.width,
+            height: request.height,
+            artifacts_dir,
+            remote_runtime_url,
+            timeout: state.qemu_bridge_probe_timeout,
+            interval: state.qemu_bridge_probe_interval,
+        }));
+    }
+
     Ok(record)
+}
+
+async fn monitor_qemu_bridge(monitor: QemuBridgeMonitor) {
+    let started_at = chrono::Utc::now();
+    let deadline = tokio::time::Instant::now() + monitor.timeout;
+    let mut attempts = 0usize;
+    let mut last_error = String::new();
+
+    while tokio::time::Instant::now() < deadline {
+        attempts += 1;
+        let health = bridge_json::<Value>(
+            &monitor.http_client,
+            &monitor.remote_runtime_url,
+            "/health",
+            None,
+        )
+        .await;
+        match health {
+            Ok(_) => {
+                let create_request = CreateSessionRequest {
+                    provider: "display".to_string(),
+                    width: monitor.width,
+                    height: monitor.height,
+                    display: Some(monitor.guest_display.clone()),
+                    browser_command: Some(monitor.browser_command.clone()),
+                    boot: None,
+                    container_image: None,
+                    disable_kvm: None,
+                };
+                match bridge_json::<BridgeSessionResponse>(
+                    &monitor.http_client,
+                    &monitor.remote_runtime_url,
+                    "/api/sessions",
+                    Some(&create_request),
+                )
+                .await
+                {
+                    Ok(response) => {
+                        let remote_session_id = response.session.id.clone();
+                        let remote_capabilities = response.session.capabilities.clone();
+                        let mut guard = monitor.sessions.lock().await;
+                        if let Some(handle) = guard.get_mut(&monitor.session_id) {
+                            if let Some(remote_bridge) = handle.remote_bridge.as_mut() {
+                                remote_bridge.session_id = Some(remote_session_id);
+                            }
+                            handle.record.runtime_base_url =
+                                Some(monitor.host_runtime_base_url.clone());
+                            handle.record.bridge_status = Some("runtime_ready".to_string());
+                            handle.record.bridge_error = None;
+                            handle.record.capabilities = merge_capabilities(
+                                &handle.record.capabilities,
+                                &remote_capabilities,
+                            );
+                        }
+                        return;
+                    }
+                    Err(error) => {
+                        last_error = error;
+                    }
+                }
+            }
+            Err(error) => {
+                last_error = error;
+            }
+        }
+        tokio::time::sleep(monitor.interval).await;
+    }
+
+    let diagnostics_path = monitor.artifacts_dir.join("qemu-bridge-diagnostics.json");
+    let artifact_path = diagnostics_path.to_string_lossy().to_string();
+    let payload = json!({
+        "session_id": monitor.session_id,
+        "bridge_status": "failed",
+        "remote_runtime_url": monitor.remote_runtime_url,
+        "attempts": attempts,
+        "started_at": started_at,
+        "finished_at": chrono::Utc::now(),
+        "last_error": last_error,
+    });
+    let _ = tokio::fs::write(
+        &diagnostics_path,
+        serde_json::to_vec_pretty(&payload).unwrap_or_default(),
+    )
+    .await;
+    let bridge_error = StructuredError {
+        code: "qemu_bridge_attach_failed".to_string(),
+        message: "QEMU guest runtime bridge did not become ready in time".to_string(),
+        retryable: false,
+        category: "provider".to_string(),
+        details: json!({
+            "remote_runtime_url": monitor.remote_runtime_url,
+            "attempts": attempts,
+            "last_error": last_error,
+        }),
+        artifact_refs: vec![ArtifactRef {
+            kind: "qemu_bridge_diagnostics".to_string(),
+            path: artifact_path,
+            mime_type: Some("application/json".to_string()),
+        }],
+    };
+
+    let mut guard = monitor.sessions.lock().await;
+    if let Some(handle) = guard.get_mut(&monitor.session_id) {
+        handle.record.bridge_status = Some("failed".to_string());
+        handle.record.bridge_error = Some(bridge_error);
+    }
 }
 
 async fn docker_output(args: &[&str]) -> Result<String, (StatusCode, Value)> {
@@ -400,6 +675,201 @@ async fn docker_output(args: &[&str]) -> Result<String, (StatusCode, Value)> {
     }
 }
 
+async fn docker_mapped_port(
+    container_name: &str,
+    container_port: u16,
+) -> Result<Option<u16>, (StatusCode, Value)> {
+    let output = Command::new("docker")
+        .args(["port", container_name, &format!("{container_port}/tcp")])
+        .output()
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::FAILED_DEPENDENCY,
+                json!({ "code": "docker_command_failed", "message": error.to_string() }),
+            )
+        })?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    Ok(parse_published_port(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+fn parse_published_port(output: &str) -> Option<u16> {
+    output
+        .lines()
+        .filter_map(|line| line.trim().rsplit(':').next())
+        .find_map(|port| port.parse::<u16>().ok())
+}
+
+async fn bridge_json<T: DeserializeOwned>(
+    client: &Client,
+    base_url: &str,
+    path: &str,
+    body: Option<&CreateSessionRequest>,
+) -> Result<T, String> {
+    let request = if let Some(body) = body {
+        client.post(format!("{base_url}{path}")).json(body)
+    } else {
+        client.get(format!("{base_url}{path}"))
+    };
+    let response = request.send().await.map_err(|error| error.to_string())?;
+    let status = response.status();
+    let text = response.text().await.map_err(|error| error.to_string())?;
+    if !status.is_success() {
+        return Err(format!(
+            "bridge request to {path} failed with {status}: {text}"
+        ));
+    }
+    serde_json::from_str(&text).map_err(|error| error.to_string())
+}
+
+fn ready_remote_bridge(remote_bridge: &RemoteBridgeHandle) -> Option<&RemoteBridgeHandle> {
+    remote_bridge.session_id.as_ref()?;
+    Some(remote_bridge)
+}
+
+fn merge_capabilities(left: &[String], right: &[String]) -> Vec<String> {
+    let mut merged = BTreeSet::new();
+    merged.extend(left.iter().cloned());
+    merged.extend(right.iter().cloned());
+    merged.into_iter().collect()
+}
+
+async fn proxy_bridge_json<T: DeserializeOwned>(
+    state: &AppState,
+    remote_bridge: &RemoteBridgeHandle,
+    endpoint: &str,
+    action: Option<&ActionRequest>,
+) -> Result<T, StructuredError> {
+    let remote_session_id = remote_bridge
+        .session_id
+        .as_ref()
+        .ok_or_else(|| StructuredError {
+            code: "provider_bridge_unavailable".to_string(),
+            message: "remote bridge session is not ready".to_string(),
+            retryable: true,
+            category: "provider".to_string(),
+            details: json!({ "base_url": remote_bridge.base_url }),
+            artifact_refs: vec![],
+        })?;
+    let url = format!(
+        "{}/api/sessions/{}/{}",
+        remote_bridge.base_url, remote_session_id, endpoint
+    );
+    let request = if let Some(action) = action {
+        state.http_client.post(url).json(action)
+    } else {
+        state.http_client.get(url)
+    };
+    let response = request.send().await.map_err(|error| StructuredError {
+        code: "remote_bridge_request_failed".to_string(),
+        message: error.to_string(),
+        retryable: true,
+        category: "provider".to_string(),
+        details: json!({ "base_url": remote_bridge.base_url, "endpoint": endpoint }),
+        artifact_refs: vec![],
+    })?;
+    let status = response.status();
+    let text = response.text().await.map_err(|error| StructuredError {
+        code: "remote_bridge_response_failed".to_string(),
+        message: error.to_string(),
+        retryable: true,
+        category: "provider".to_string(),
+        details: json!({ "base_url": remote_bridge.base_url, "endpoint": endpoint }),
+        artifact_refs: vec![],
+    })?;
+    if !status.is_success() {
+        return Err(StructuredError {
+            code: "remote_bridge_status_failed".to_string(),
+            message: format!("remote bridge returned {status}"),
+            retryable: true,
+            category: "provider".to_string(),
+            details: json!({
+                "base_url": remote_bridge.base_url,
+                "endpoint": endpoint,
+                "status": status.as_u16(),
+                "body": text,
+            }),
+            artifact_refs: vec![],
+        });
+    }
+    serde_json::from_str(&text).map_err(|error| StructuredError {
+        code: "remote_bridge_decode_failed".to_string(),
+        message: error.to_string(),
+        retryable: true,
+        category: "provider".to_string(),
+        details: json!({ "base_url": remote_bridge.base_url, "endpoint": endpoint, "body": text }),
+        artifact_refs: vec![],
+    })
+}
+
+async fn proxy_bridge_bytes(
+    state: &AppState,
+    remote_bridge: &RemoteBridgeHandle,
+    endpoint: &str,
+) -> Result<Vec<u8>, StructuredError> {
+    let remote_session_id = remote_bridge
+        .session_id
+        .as_ref()
+        .ok_or_else(|| StructuredError {
+            code: "provider_bridge_unavailable".to_string(),
+            message: "remote bridge session is not ready".to_string(),
+            retryable: true,
+            category: "provider".to_string(),
+            details: json!({ "base_url": remote_bridge.base_url }),
+            artifact_refs: vec![],
+        })?;
+    let url = format!(
+        "{}/api/sessions/{}/{}",
+        remote_bridge.base_url, remote_session_id, endpoint
+    );
+    let response = state
+        .http_client
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| StructuredError {
+            code: "remote_bridge_request_failed".to_string(),
+            message: error.to_string(),
+            retryable: true,
+            category: "provider".to_string(),
+            details: json!({ "base_url": remote_bridge.base_url, "endpoint": endpoint }),
+            artifact_refs: vec![],
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(StructuredError {
+            code: "remote_bridge_status_failed".to_string(),
+            message: format!("remote bridge returned {status}"),
+            retryable: true,
+            category: "provider".to_string(),
+            details: json!({
+                "base_url": remote_bridge.base_url,
+                "endpoint": endpoint,
+                "status": status.as_u16(),
+                "body": body,
+            }),
+            artifact_refs: vec![],
+        });
+    }
+    response
+        .bytes()
+        .await
+        .map(|bytes| bytes.to_vec())
+        .map_err(|error| StructuredError {
+            code: "remote_bridge_bytes_failed".to_string(),
+            message: error.to_string(),
+            retryable: true,
+            category: "provider".to_string(),
+            details: json!({ "base_url": remote_bridge.base_url, "endpoint": endpoint }),
+            artifact_refs: vec![],
+        })
+}
+
 async fn get_session(State(state): State<AppState>, AxumPath(id): AxumPath<String>) -> Response {
     match session_snapshot(&state, &id).await {
         Some(session) => (StatusCode::OK, Json(json!({ "session": session }))).into_response(),
@@ -415,10 +885,23 @@ async fn delete_session(State(state): State<AppState>, AxumPath(id): AxumPath<St
     let handle = state.sessions.lock().await.remove(&id);
     match handle {
         Some(mut handle) => {
+            if let Some(remote_bridge) = handle.remote_bridge.as_ref()
+                && let Some(remote_session_id) = remote_bridge.session_id.as_ref()
+            {
+                let _ = state
+                    .http_client
+                    .delete(format!(
+                        "{}/api/sessions/{}",
+                        remote_bridge.base_url, remote_session_id
+                    ))
+                    .send()
+                    .await;
+            }
             match &mut handle.provider_handle {
                 SessionProviderHandle::Xvfb { child } => {
                     let _ = child.kill().await;
                 }
+                SessionProviderHandle::ExistingDisplay => {}
                 SessionProviderHandle::QemuDocker { container_name } => {
                     let _ = docker_output(&["rm", "-f", container_name]).await;
                 }
@@ -447,19 +930,28 @@ async fn get_observation(
                 .into_response();
         }
     };
-    let Some(backend) = session.backend else {
-        return provider_bridge_unavailable_response(
+    if let Some(backend) = session.backend {
+        match backend.observation().await {
+            Ok(observation) => (StatusCode::OK, Json(json!(observation))).into_response(),
+            Err(error) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": error })),
+            )
+                .into_response(),
+        }
+    } else if let Some(remote_bridge) = session.remote_bridge.as_ref().and_then(ready_remote_bridge)
+    {
+        match proxy_bridge_json::<Observation>(&state, remote_bridge, "observation", None).await {
+            Ok(observation) => (StatusCode::OK, Json(json!(observation))).into_response(),
+            Err(error) => {
+                (StatusCode::BAD_GATEWAY, Json(json!({ "error": error }))).into_response()
+            }
+        }
+    } else {
+        provider_bridge_unavailable_response(
             &session.record,
             "observation requires a guest runtime bridge inside the VM",
-        );
-    };
-    match backend.observation().await {
-        Ok(observation) => (StatusCode::OK, Json(json!(observation))).into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": error })),
         )
-            .into_response(),
     }
 }
 
@@ -474,26 +966,42 @@ async fn get_screenshot(State(state): State<AppState>, AxumPath(id): AxumPath<St
                 .into_response();
         }
     };
-    let Some(backend) = session.backend else {
-        return provider_bridge_unavailable_response(
+    if let Some(backend) = session.backend {
+        match backend.screenshot_png().await {
+            Ok((bytes, _path)) => {
+                let mut response = Response::new(bytes.into());
+                response.headers_mut().insert(
+                    header::CONTENT_TYPE,
+                    header::HeaderValue::from_static("image/png"),
+                );
+                response
+            }
+            Err(error) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": error })),
+            )
+                .into_response(),
+        }
+    } else if let Some(remote_bridge) = session.remote_bridge.as_ref().and_then(ready_remote_bridge)
+    {
+        match proxy_bridge_bytes(&state, remote_bridge, "screenshot").await {
+            Ok(bytes) => {
+                let mut response = Response::new(bytes.into());
+                response.headers_mut().insert(
+                    header::CONTENT_TYPE,
+                    header::HeaderValue::from_static("image/png"),
+                );
+                response
+            }
+            Err(error) => {
+                (StatusCode::BAD_GATEWAY, Json(json!({ "error": error }))).into_response()
+            }
+        }
+    } else {
+        provider_bridge_unavailable_response(
             &session.record,
             "screenshot capture requires a guest runtime bridge inside the VM",
-        );
-    };
-    match backend.screenshot_png().await {
-        Ok((bytes, _path)) => {
-            let mut response = Response::new(bytes.into());
-            response.headers_mut().insert(
-                header::CONTENT_TYPE,
-                header::HeaderValue::from_static("image/png"),
-            );
-            response
-        }
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": error })),
         )
-            .into_response(),
     }
 }
 
@@ -511,6 +1019,25 @@ async fn get_available_actions(
                 .into_response();
         }
     };
+    if let Some(remote_bridge) = session.remote_bridge.as_ref().and_then(ready_remote_bridge) {
+        match proxy_bridge_json::<RuntimeCapabilities>(&state, remote_bridge, "actions", None).await
+        {
+            Ok(mut capabilities) => {
+                capabilities.provider = session.record.provider.clone();
+                capabilities.vm_mode = if session.record.provider == "qemu" {
+                    "qemu".to_string()
+                } else {
+                    capabilities.vm_mode
+                };
+                capabilities.enrichments =
+                    merge_capabilities(&capabilities.enrichments, &session.record.capabilities);
+                return (StatusCode::OK, Json(json!(capabilities))).into_response();
+            }
+            Err(error) => {
+                return (StatusCode::BAD_GATEWAY, Json(json!({ "error": error }))).into_response();
+            }
+        }
+    }
     let mut capabilities = runtime_capabilities(
         &session.record.provider,
         session.record.capabilities.clone(),
@@ -537,14 +1064,25 @@ async fn perform_action(
                 .into_response();
         }
     };
-    let Some(backend) = session.backend else {
-        return provider_bridge_unavailable_response(
+    if let Some(backend) = session.backend {
+        let receipt = backend.perform_action(action).await;
+        (StatusCode::OK, Json(json!(receipt))).into_response()
+    } else if let Some(remote_bridge) = session.remote_bridge.as_ref().and_then(ready_remote_bridge)
+    {
+        match proxy_bridge_json::<ActionReceipt>(&state, remote_bridge, "actions", Some(&action))
+            .await
+        {
+            Ok(receipt) => (StatusCode::OK, Json(json!(receipt))).into_response(),
+            Err(error) => {
+                (StatusCode::BAD_GATEWAY, Json(json!({ "error": error }))).into_response()
+            }
+        }
+    } else {
+        provider_bridge_unavailable_response(
             &session.record,
             "actions require a guest runtime bridge inside the VM",
-        );
-    };
-    let receipt = backend.perform_action(action).await;
-    (StatusCode::OK, Json(json!(receipt))).into_response()
+        )
+    }
 }
 
 fn provider_bridge_unavailable_response(record: &SessionRecord, reason: &str) -> Response {
@@ -557,8 +1095,13 @@ fn provider_bridge_unavailable_response(record: &SessionRecord, reason: &str) ->
             "provider": record.provider,
             "viewer_url": record.viewer_url,
             "bridge_status": record.bridge_status,
+            "bridge_error": record.bridge_error,
         }),
-        artifact_refs: vec![],
+        artifact_refs: record
+            .bridge_error
+            .as_ref()
+            .map(|error| error.artifact_refs.clone())
+            .unwrap_or_default(),
     };
     (StatusCode::CONFLICT, Json(json!({ "error": error }))).into_response()
 }
@@ -581,12 +1124,14 @@ async fn session_clone(state: &AppState, id: &str) -> Option<SessionHandleClone>
         .map(|handle| SessionHandleClone {
             record: handle.record.clone(),
             backend: handle.backend.clone(),
+            remote_bridge: handle.remote_bridge.clone(),
         })
 }
 
 struct SessionHandleClone {
     record: SessionRecord,
     backend: Option<LinuxBackend>,
+    remote_bridge: Option<RemoteBridgeHandle>,
 }
 
 fn runtime_capabilities(provider: &str, enrichments: Vec<String>) -> RuntimeCapabilities {
@@ -605,4 +1150,30 @@ async fn next_display(state: &AppState) -> String {
         }
     }
     format!(":{}", 140 + sessions.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{merge_capabilities, parse_published_port};
+
+    #[test]
+    fn parses_published_port_from_docker_output() {
+        assert_eq!(parse_published_port("127.0.0.1:49153\n"), Some(49153));
+        assert_eq!(
+            parse_published_port("0.0.0.0:49153\n:::49153\n"),
+            Some(49153)
+        );
+    }
+
+    #[test]
+    fn merges_capabilities_without_duplicates() {
+        let merged = merge_capabilities(
+            &["vm".to_string(), "viewer".to_string()],
+            &["viewer".to_string(), "shell".to_string()],
+        );
+        assert_eq!(
+            merged,
+            vec!["shell".to_string(), "viewer".to_string(), "vm".to_string()]
+        );
+    }
 }
