@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Agent Computer Use Oversight</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <section class="panel controls">
+        <h1>Agent Computer Use</h1>
+        <p class="subtle">Linux sandbox / desktop-use oversight UI</p>
+        <button id="create-session">Create local Xvfb session</button>
+        <button id="refresh-session">Refresh</button>
+        <pre id="session-meta">No session</pre>
+        <label>
+          Task description
+          <textarea id="task-description">Open Firefox inside the sandbox and verify the desktop is interactive.</textarea>
+        </label>
+        <button id="create-task">Create task</button>
+        <div class="task-controls">
+          <button data-task-action="pause">Pause</button>
+          <button data-task-action="resume">Resume</button>
+          <button data-task-action="complete">Complete</button>
+          <button data-task-action="reset">Reset</button>
+          <button data-task-action="terminate">Terminate</button>
+        </div>
+        <label>
+          Manual action payload
+          <textarea id="action-payload">{
+  "kind": "browser_open",
+  "url": "https://example.com"
+}</textarea>
+        </label>
+        <button id="run-action">Run action</button>
+      </section>
+      <section class="panel desktop">
+        <h2>Live desktop</h2>
+        <img id="desktop-image" alt="Desktop screenshot" />
+        <pre id="observation"></pre>
+      </section>
+      <section class="panel history">
+        <h2>Action history</h2>
+        <pre id="history"></pre>
+      </section>
+      <section class="panel logs">
+        <h2>Tasks / logs</h2>
+        <pre id="tasks"></pre>
+      </section>
+    </main>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

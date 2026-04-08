@@ -1,0 +1,5 @@
+{
+  "id": "browser-research",
+  "description": "Open a page, inspect content, and capture evidence.",
+  "success": ["page loaded", "observation summary present", "artifact path captured"]
+}

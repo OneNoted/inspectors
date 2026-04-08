@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Observation",
+  "type": "object",
+  "properties": {
+    "active_window": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WindowMetadata"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "browser": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BrowserSnapshot"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "capability_flags": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "captured_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "cursor_position": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CursorPosition"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "raw": true,
+    "screenshot": {
+      "$ref": "#/$defs/ScreenshotData"
+    },
+    "summary": true
+  },
+  "required": [
+    "captured_at",
+    "screenshot",
+    "raw",
+    "summary"
+  ],
+  "$defs": {
+    "BrowserSnapshot": {
+      "type": "object",
+      "properties": {
+        "console_logs": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "current_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dom_html": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "network_events": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "CursorPosition": {
+      "type": "object",
+      "properties": {
+        "screen": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "x": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "y": {
+          "type": "integer",
+          "format": "int32"
+        }
+      },
+      "required": [
+        "x",
+        "y"
+      ]
+    },
+    "ScreenshotData": {
+      "type": "object",
+      "properties": {
+        "artifact_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "data_base64": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "height": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "mime_type": {
+          "type": "string"
+        },
+        "width": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "mime_type"
+      ]
+    },
+    "WindowMetadata": {
+      "type": "object",
+      "properties": {
+        "class_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

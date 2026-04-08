@@ -1,0 +1,22 @@
+{
+  "name": "agent-computer-use-platform",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/control-plane",
+    "apps/sandbox-runner",
+    "apps/web-ui",
+    "packages/ts-sdk"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present && cargo build --workspace",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present && cargo test --workspace",
+    "lint": "cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && npm run typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "id": "file-terminal",
+  "description": "Write a file and verify its contents via command/file observation.",
+  "success": ["write_file receipt ok", "read_file returns expected contents"]
+}

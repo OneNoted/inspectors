@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TaskStatus",
+  "type": "object",
+  "properties": {
+    "approval_required": {
+      "type": "boolean"
+    },
+    "current_goal": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "paused": {
+      "type": "boolean"
+    },
+    "state": {
+      "type": "string"
+    },
+    "task_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "task_id",
+    "state",
+    "paused",
+    "approval_required"
+  ]
+}

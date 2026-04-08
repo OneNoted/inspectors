@@ -1,0 +1,7 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/ts-sdk" },
+    { "path": "./apps/control-plane" }
+  ]
+}

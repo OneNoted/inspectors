@@ -1,0 +1,15 @@
+.omx/
+node_modules/
+package-lock.json
+npm-debug.log*
+dist/
+build/
+.next/
+target/
+artifacts/
+.sessions/
+.tmp/
+.pytest_cache/
+__pycache__/
+.venv/
+*.pyc

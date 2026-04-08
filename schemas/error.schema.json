@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StructuredError",
+  "type": "object",
+  "properties": {
+    "artifact_refs": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      }
+    },
+    "category": {
+      "type": "string"
+    },
+    "code": {
+      "type": "string"
+    },
+    "details": true,
+    "message": {
+      "type": "string"
+    },
+    "retryable": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "code",
+    "message",
+    "retryable",
+    "category",
+    "details"
+  ],
+  "$defs": {
+    "ArtifactRef": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "mime_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "path"
+      ]
+    }
+  }
+}

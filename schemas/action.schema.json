@@ -1,0 +1,557 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ActionRequest",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "mouse_move"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "x": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "y": {
+          "type": "integer",
+          "format": "int32"
+        }
+      },
+      "required": [
+        "kind",
+        "x",
+        "y"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "button": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MouseButton"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "const": "mouse_click"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "x": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        },
+        "y": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "end_x": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "end_y": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "kind": {
+          "type": "string",
+          "const": "mouse_drag"
+        },
+        "start_x": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "start_y": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "kind",
+        "start_x",
+        "start_y",
+        "end_x",
+        "end_y"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "key_press"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "kind",
+        "key"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "type_text"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "text"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "kind": {
+          "type": "string",
+          "const": "hotkey"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "kind",
+        "keys"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "delta_x": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "delta_y": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "kind": {
+          "type": "string",
+          "const": "scroll"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "kind",
+        "delta_x",
+        "delta_y"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "open_app"
+        },
+        "name": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "kind",
+        "name"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "focus_window"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "window_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "window_id"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "bounds": {
+          "$ref": "#/$defs/Bounds"
+        },
+        "kind": {
+          "type": "string",
+          "const": "resize_window"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "window_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "window_id",
+        "bounds"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "env": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "kind": {
+          "type": "string",
+          "const": "run_command"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "kind",
+        "command"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "read_file"
+        },
+        "path": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "kind",
+        "path"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "contents": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "write_file"
+        },
+        "path": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "kind",
+        "path",
+        "contents"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "browser_open"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "url"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "browser_get_dom"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "button": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MouseButton"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "const": "browser_click"
+        },
+        "selector": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "x": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        },
+        "y": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "browser_type"
+        },
+        "selector": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "text"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "browser_screenshot"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    }
+  ],
+  "$defs": {
+    "Bounds": {
+      "type": "object",
+      "properties": {
+        "height": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "width": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "x": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "y": {
+          "type": "integer",
+          "format": "int32"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+      ]
+    },
+    "MouseButton": {
+      "type": "string",
+      "enum": [
+        "left",
+        "middle",
+        "right"
+      ]
+    }
+  }
+}

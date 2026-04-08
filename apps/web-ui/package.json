@@ -1,0 +1,9 @@
+{
+  "name": "@acu/web-ui",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "node -e \"console.log('static ui: no build step')\"",
+    "test": "node -e \"console.log('static ui: no tests')\""
+  }
+}

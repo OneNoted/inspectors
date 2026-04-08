@@ -1,0 +1,9 @@
+{
+  "desktopInput": "allow",
+  "shell": "allow",
+  "filesystem": "allow-within-session",
+  "browser": "allow",
+  "network": "egress-allow",
+  "hostDesktopControl": "deny",
+  "hostFilesystemMounts": "deny"
+}

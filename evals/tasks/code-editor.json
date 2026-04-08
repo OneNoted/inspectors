@@ -1,0 +1,5 @@
+{
+  "id": "code-editor",
+  "description": "Launch a GUI app and interact with it in the sandbox.",
+  "success": ["open_app succeeds", "screenshot artifact available"]
+}
