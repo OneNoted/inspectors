@@ -327,6 +327,8 @@ pub struct CreateSessionRequest {
     pub width: u32,
     #[serde(default = "default_height")]
     pub height: u32,
+    pub display: Option<String>,
+    pub browser_command: Option<String>,
     pub boot: Option<String>,
     pub container_image: Option<String>,
     pub disable_kvm: Option<bool>,
@@ -348,6 +350,7 @@ pub struct SessionRecord {
     pub runtime_base_url: Option<String>,
     pub viewer_url: Option<String>,
     pub bridge_status: Option<String>,
+    pub bridge_error: Option<StructuredError>,
 }
 
 fn default_provider() -> String {

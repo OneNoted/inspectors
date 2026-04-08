@@ -53,6 +53,7 @@ export interface SessionRecord {
   runtime_base_url?: string | null;
   viewer_url?: string | null;
   bridge_status?: string | null;
+  bridge_error?: unknown;
 }
 
 export interface TaskRecord {
