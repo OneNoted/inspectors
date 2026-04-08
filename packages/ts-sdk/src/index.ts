@@ -112,6 +112,9 @@ export interface CreateSessionRequest {
   provider?: SessionProvider;
   width?: number;
   height?: number;
+  boot?: string;
+  container_image?: string;
+  disable_kvm?: boolean;
 }
 
 export interface SessionRecord {
@@ -126,6 +129,8 @@ export interface SessionRecord {
   capabilities: string[];
   browser_command?: string | null;
   runtime_base_url?: string | null;
+  viewer_url?: string | null;
+  bridge_status?: string | null;
 }
 
 export class ComputerUseClient {

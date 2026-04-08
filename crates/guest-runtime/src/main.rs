@@ -1,19 +1,20 @@
 #![allow(clippy::result_large_err)]
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path as AxumPath, State},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use desktop_core::{
-    ActionRequest, CreateSessionRequest, RuntimeCapabilities, SessionRecord, capability_descriptor,
+    ActionRequest, CreateSessionRequest, RuntimeCapabilities, SessionRecord, StructuredError,
+    capability_descriptor,
 };
 use linux_backend::{BackendOptions, LinuxBackend};
 use serde_json::{Value, json};
@@ -33,12 +34,13 @@ struct AppState {
 
 struct SessionHandle {
     record: SessionRecord,
-    backend: LinuxBackend,
+    backend: Option<LinuxBackend>,
     provider_handle: SessionProviderHandle,
 }
 
 enum SessionProviderHandle {
     Xvfb { child: Child },
+    QemuDocker { container_name: String },
 }
 
 #[tokio::main]
@@ -119,25 +121,23 @@ async fn create_session_impl(
     state: &AppState,
     request: CreateSessionRequest,
 ) -> Result<SessionRecord, (StatusCode, Value)> {
-    if request.provider == "qemu" {
-        return Err((
-            StatusCode::NOT_IMPLEMENTED,
-            json!({
-                "code": "provider_unavailable",
-                "message": "QEMU/KVM is the production target but is not available in this environment. Use the xvfb provider for local verification.",
-                "provider": "qemu"
-            }),
-        ));
-    }
-    if request.provider != "xvfb" {
-        return Err((
+    match request.provider.as_str() {
+        "xvfb" => create_xvfb_session(state, request).await,
+        "qemu" => create_qemu_session(state, request).await,
+        other => Err((
             StatusCode::BAD_REQUEST,
             json!({
                 "code": "unsupported_provider",
-                "message": format!("Unsupported provider `{}`", request.provider),
+                "message": format!("Unsupported provider `{other}`"),
             }),
-        ));
+        )),
     }
+}
+
+async fn create_xvfb_session(
+    state: &AppState,
+    request: CreateSessionRequest,
+) -> Result<SessionRecord, (StatusCode, Value)> {
     if !LinuxBackend::tool_exists("Xvfb") {
         return Err((
             StatusCode::FAILED_DEPENDENCY,
@@ -206,13 +206,15 @@ async fn create_session_impl(
         capabilities: backend.capabilities(),
         browser_command: Some(state.browser_command.clone()),
         runtime_base_url: Some(state.runtime_base_url.clone()),
+        viewer_url: None,
+        bridge_status: Some("runtime_ready".to_string()),
     };
 
     state.sessions.lock().await.insert(
         session_id,
         SessionHandle {
             record: record.clone(),
-            backend,
+            backend: Some(backend),
             provider_handle: SessionProviderHandle::Xvfb { child },
         },
     );
@@ -220,7 +222,185 @@ async fn create_session_impl(
     Ok(record)
 }
 
-async fn get_session(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+async fn create_qemu_session(
+    state: &AppState,
+    request: CreateSessionRequest,
+) -> Result<SessionRecord, (StatusCode, Value)> {
+    if !LinuxBackend::tool_exists("docker") {
+        return Err((
+            StatusCode::FAILED_DEPENDENCY,
+            json!({
+                "code": "missing_tool",
+                "message": "Docker is required for the qemu container provider in this environment",
+            }),
+        ));
+    }
+
+    let session_id = Uuid::new_v4().to_string();
+    let artifacts_dir = state.artifacts_root.join(&session_id);
+    tokio::fs::create_dir_all(&artifacts_dir)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "code": "artifacts_dir_failed", "message": error.to_string() }),
+            )
+        })?;
+    let absolute_artifacts_dir = std::fs::canonicalize(&artifacts_dir).map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "code": "artifacts_dir_canonicalize_failed", "message": error.to_string() }),
+        )
+    })?;
+
+    let container_name = format!("acu-qemu-{}", &session_id[..12]);
+    let image = request
+        .container_image
+        .clone()
+        .or_else(|| std::env::var("ACU_QEMU_CONTAINER_IMAGE").ok())
+        .unwrap_or_else(|| "qemux/qemu".to_string());
+    let boot = request
+        .boot
+        .clone()
+        .or_else(|| std::env::var("ACU_QEMU_BOOT").ok())
+        .unwrap_or_else(|| "alpine".to_string());
+    let disable_kvm = request
+        .disable_kvm
+        .unwrap_or_else(|| !Path::new("/dev/kvm").exists());
+
+    let mut args = vec![
+        "run".to_string(),
+        "-d".to_string(),
+        "--rm".to_string(),
+        "--name".to_string(),
+        container_name.clone(),
+        "-e".to_string(),
+        format!("BOOT={boot}"),
+        "-v".to_string(),
+        format!("{}:/storage", absolute_artifacts_dir.to_string_lossy()),
+    ];
+    if disable_kvm {
+        args.push("-e".to_string());
+        args.push("KVM=N".to_string());
+    }
+    args.push(image.clone());
+
+    let output = Command::new("docker")
+        .args(&args)
+        .output()
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::FAILED_DEPENDENCY,
+                json!({ "code": "docker_spawn_failed", "message": error.to_string() }),
+            )
+        })?;
+    if !output.status.success() {
+        return Err((
+            StatusCode::FAILED_DEPENDENCY,
+            json!({
+                "code": "qemu_container_launch_failed",
+                "message": String::from_utf8_lossy(&output.stderr),
+            }),
+        ));
+    }
+
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    let running = docker_output(&["inspect", "-f", "{{.State.Running}}", &container_name]).await?;
+    if running.trim() != "true" {
+        let logs = docker_output(&["logs", &container_name])
+            .await
+            .unwrap_or_default();
+        let _ = docker_output(&["rm", "-f", &container_name]).await;
+        return Err((
+            StatusCode::FAILED_DEPENDENCY,
+            json!({
+                "code": "qemu_container_not_running",
+                "message": "qemu container exited before the viewer became available",
+                "logs": logs,
+            }),
+        ));
+    }
+
+    let ip = docker_output(&[
+        "inspect",
+        "-f",
+        "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+        &container_name,
+    ])
+    .await?
+    .trim()
+    .to_string();
+    if ip.is_empty() {
+        let _ = docker_output(&["rm", "-f", &container_name]).await;
+        return Err((
+            StatusCode::FAILED_DEPENDENCY,
+            json!({
+                "code": "qemu_container_ip_missing",
+                "message": "qemu container started but did not expose a bridge-network IP",
+            }),
+        ));
+    }
+
+    let viewer_url = format!("http://{ip}:8006");
+    let record = SessionRecord {
+        id: session_id.clone(),
+        provider: "qemu".to_string(),
+        display: None,
+        width: request.width,
+        height: request.height,
+        state: "running".to_string(),
+        created_at: chrono::Utc::now(),
+        artifacts_dir: artifacts_dir.to_string_lossy().to_string(),
+        capabilities: vec![
+            "vm".to_string(),
+            "viewer".to_string(),
+            "qemu_container".to_string(),
+        ],
+        browser_command: None,
+        runtime_base_url: None,
+        viewer_url: Some(viewer_url.clone()),
+        bridge_status: Some("viewer_only".to_string()),
+    };
+
+    state.sessions.lock().await.insert(
+        session_id,
+        SessionHandle {
+            record: record.clone(),
+            backend: None,
+            provider_handle: SessionProviderHandle::QemuDocker { container_name },
+        },
+    );
+
+    Ok(record)
+}
+
+async fn docker_output(args: &[&str]) -> Result<String, (StatusCode, Value)> {
+    let output = Command::new("docker")
+        .args(args)
+        .output()
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::FAILED_DEPENDENCY,
+                json!({ "code": "docker_command_failed", "message": error.to_string() }),
+            )
+        })?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        Err((
+            StatusCode::FAILED_DEPENDENCY,
+            json!({
+                "code": "docker_command_failed",
+                "args": args,
+                "stderr": String::from_utf8_lossy(&output.stderr),
+            }),
+        ))
+    }
+}
+
+async fn get_session(State(state): State<AppState>, AxumPath(id): AxumPath<String>) -> Response {
     match session_snapshot(&state, &id).await {
         Some(session) => (StatusCode::OK, Json(json!({ "session": session }))).into_response(),
         None => (
@@ -231,12 +411,18 @@ async fn get_session(State(state): State<AppState>, Path(id): Path<String>) -> R
     }
 }
 
-async fn delete_session(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+async fn delete_session(State(state): State<AppState>, AxumPath(id): AxumPath<String>) -> Response {
     let handle = state.sessions.lock().await.remove(&id);
     match handle {
         Some(mut handle) => {
-            let SessionProviderHandle::Xvfb { child } = &mut handle.provider_handle;
-            let _ = child.kill().await;
+            match &mut handle.provider_handle {
+                SessionProviderHandle::Xvfb { child } => {
+                    let _ = child.kill().await;
+                }
+                SessionProviderHandle::QemuDocker { container_name } => {
+                    let _ = docker_output(&["rm", "-f", container_name]).await;
+                }
+            }
             (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
         }
         None => (
@@ -247,9 +433,12 @@ async fn delete_session(State(state): State<AppState>, Path(id): Path<String>) -
     }
 }
 
-async fn get_observation(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let backend = match session_backend(&state, &id).await {
-        Some(backend) => backend,
+async fn get_observation(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let session = match session_clone(&state, &id).await {
+        Some(session) => session,
         None => {
             return (
                 StatusCode::NOT_FOUND,
@@ -257,6 +446,12 @@ async fn get_observation(State(state): State<AppState>, Path(id): Path<String>) 
             )
                 .into_response();
         }
+    };
+    let Some(backend) = session.backend else {
+        return provider_bridge_unavailable_response(
+            &session.record,
+            "observation requires a guest runtime bridge inside the VM",
+        );
     };
     match backend.observation().await {
         Ok(observation) => (StatusCode::OK, Json(json!(observation))).into_response(),
@@ -268,9 +463,9 @@ async fn get_observation(State(state): State<AppState>, Path(id): Path<String>) 
     }
 }
 
-async fn get_screenshot(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let backend = match session_backend(&state, &id).await {
-        Some(backend) => backend,
+async fn get_screenshot(State(state): State<AppState>, AxumPath(id): AxumPath<String>) -> Response {
+    let session = match session_clone(&state, &id).await {
+        Some(session) => session,
         None => {
             return (
                 StatusCode::NOT_FOUND,
@@ -278,6 +473,12 @@ async fn get_screenshot(State(state): State<AppState>, Path(id): Path<String>) -
             )
                 .into_response();
         }
+    };
+    let Some(backend) = session.backend else {
+        return provider_bridge_unavailable_response(
+            &session.record,
+            "screenshot capture requires a guest runtime bridge inside the VM",
+        );
     };
     match backend.screenshot_png().await {
         Ok((bytes, _path)) => {
@@ -296,9 +497,12 @@ async fn get_screenshot(State(state): State<AppState>, Path(id): Path<String>) -
     }
 }
 
-async fn get_available_actions(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let handle = match session_record_with_capabilities(&state, &id).await {
-        Some(handle) => handle,
+async fn get_available_actions(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let session = match session_clone(&state, &id).await {
+        Some(session) => session,
         None => {
             return (
                 StatusCode::NOT_FOUND,
@@ -307,17 +511,24 @@ async fn get_available_actions(State(state): State<AppState>, Path(id): Path<Str
                 .into_response();
         }
     };
-    let capabilities = runtime_capabilities(&handle.0.provider, handle.1);
+    let mut capabilities = runtime_capabilities(
+        &session.record.provider,
+        session.record.capabilities.clone(),
+    );
+    if session.backend.is_none() {
+        capabilities.actions.clear();
+        capabilities.browser_mode = "viewer_only".to_string();
+    }
     (StatusCode::OK, Json(json!(capabilities))).into_response()
 }
 
 async fn perform_action(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    AxumPath(id): AxumPath<String>,
     Json(action): Json<ActionRequest>,
 ) -> Response {
-    let backend = match session_backend(&state, &id).await {
-        Some(backend) => backend,
+    let session = match session_clone(&state, &id).await {
+        Some(session) => session,
         None => {
             return (
                 StatusCode::NOT_FOUND,
@@ -326,8 +537,30 @@ async fn perform_action(
                 .into_response();
         }
     };
+    let Some(backend) = session.backend else {
+        return provider_bridge_unavailable_response(
+            &session.record,
+            "actions require a guest runtime bridge inside the VM",
+        );
+    };
     let receipt = backend.perform_action(action).await;
     (StatusCode::OK, Json(json!(receipt))).into_response()
+}
+
+fn provider_bridge_unavailable_response(record: &SessionRecord, reason: &str) -> Response {
+    let error = StructuredError {
+        code: "provider_bridge_unavailable".to_string(),
+        message: reason.to_string(),
+        retryable: false,
+        category: "provider".to_string(),
+        details: json!({
+            "provider": record.provider,
+            "viewer_url": record.viewer_url,
+            "bridge_status": record.bridge_status,
+        }),
+        artifact_refs: vec![],
+    };
+    (StatusCode::CONFLICT, Json(json!({ "error": error }))).into_response()
 }
 
 async fn session_snapshot(state: &AppState, id: &str) -> Option<SessionRecord> {
@@ -339,25 +572,21 @@ async fn session_snapshot(state: &AppState, id: &str) -> Option<SessionRecord> {
         .map(|handle| handle.record.clone())
 }
 
-async fn session_backend(state: &AppState, id: &str) -> Option<LinuxBackend> {
+async fn session_clone(state: &AppState, id: &str) -> Option<SessionHandleClone> {
     state
         .sessions
         .lock()
         .await
         .get(id)
-        .map(|handle| handle.backend.clone())
+        .map(|handle| SessionHandleClone {
+            record: handle.record.clone(),
+            backend: handle.backend.clone(),
+        })
 }
 
-async fn session_record_with_capabilities(
-    state: &AppState,
-    id: &str,
-) -> Option<(SessionRecord, Vec<String>)> {
-    state
-        .sessions
-        .lock()
-        .await
-        .get(id)
-        .map(|handle| (handle.record.clone(), handle.backend.capabilities()))
+struct SessionHandleClone {
+    record: SessionRecord,
+    backend: Option<LinuxBackend>,
 }
 
 fn runtime_capabilities(provider: &str, enrichments: Vec<String>) -> RuntimeCapabilities {

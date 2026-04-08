@@ -1,11 +1,13 @@
 import { createServer, IncomingMessage, Server, ServerResponse } from 'node:http';
 import { mkdir, stat } from 'node:fs/promises';
 import { createReadStream, existsSync } from 'node:fs';
+import { execFile } from 'node:child_process';
 import { dirname, extname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { firefox, type BrowserContext, type Page } from 'playwright-core';
+import { chromium, firefox, type BrowserContext, type Page } from 'playwright-core';
 import type { ActionReceipt, ActionRequest, JsonObject, RuntimeCapabilities, SessionRecord, TaskRecord } from './types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -14,13 +16,19 @@ const uiRoot = join(repoRoot, 'apps', 'web-ui', 'public');
 const artifactRoot = join(repoRoot, 'artifacts');
 const defaultGuestRuntimeUrl = process.env.GUEST_RUNTIME_URL ?? 'http://127.0.0.1:4001';
 const playwrightEnabled = process.env.ACU_ENABLE_PLAYWRIGHT === '1';
+const execFileAsync = promisify(execFile);
+const remoteCdpUrl = process.env.ACU_REMOTE_CDP_URL ?? 'http://127.0.0.1:9222';
+const browserBackendPreference = process.env.ACU_BROWSER_BACKEND ?? 'remote-cdp';
+const browserDockerImage = process.env.ACU_BROWSER_DOCKER_IMAGE ?? 'chromedp/headless-shell';
+const browserDockerName = process.env.ACU_BROWSER_DOCKER_NAME ?? 'acu-browser-cdp';
 
 type TaskStatus = TaskRecord['status'];
 
 interface BrowserState {
   context: BrowserContext;
   page: Page;
-  browserName: 'firefox';
+  browserName: 'firefox' | 'chromium';
+  connectionMode: 'display' | 'remote-cdp';
 }
 
 interface BrowserSnapshotCache {
@@ -118,6 +126,16 @@ async function fetchBrowserSnapshot(url: string): Promise<BrowserSnapshotCache |
   return null;
 }
 
+async function guestRequest(state: ControlPlaneState, path: string, init?: RequestInit): Promise<{ status: number; payload: any }> {
+  const response = await fetch(`${state.guestRuntimeUrl}${path}`, {
+    headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
+    ...init,
+  });
+  const text = await response.text();
+  const payload = text ? JSON.parse(text) : null;
+  return { status: response.status, payload };
+}
+
 async function guestJson<T>(state: ControlPlaneState, path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${state.guestRuntimeUrl}${path}`, {
     headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
@@ -136,12 +154,60 @@ async function getGuestSession(state: ControlPlaneState, sessionId: string): Pro
   return payload.session;
 }
 
+async function commandExists(command: string): Promise<boolean> {
+  try {
+    await execFileAsync('sh', ['-lc', `command -v ${command} >/dev/null 2>&1`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureRemoteChromium(): Promise<string> {
+  try {
+    const versionResponse = await fetch(`${remoteCdpUrl}/json/version`);
+    if (versionResponse.ok) {
+      return remoteCdpUrl;
+    }
+  } catch {}
+
+  if (!(await commandExists('docker'))) {
+    throw new Error('remote CDP browser is unavailable and docker is not installed');
+  }
+
+  await execFileAsync('docker', ['rm', '-f', browserDockerName]).catch(() => undefined);
+  await execFileAsync('docker', ['run', '-d', '--rm', '--name', browserDockerName, '--network', 'host', browserDockerImage]);
+
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    try {
+      const versionResponse = await fetch(`${remoteCdpUrl}/json/version`);
+      if (versionResponse.ok) {
+        return remoteCdpUrl;
+      }
+    } catch {}
+  }
+
+  throw new Error('remote CDP browser did not become ready in time');
+}
+
 async function ensureBrowser(state: ControlPlaneState, sessionId: string): Promise<BrowserState> {
   if (!playwrightEnabled) {
     throw new Error('playwright browser adapter is disabled in this environment');
   }
   const existing = state.browserStates.get(sessionId);
   if (existing) return existing;
+
+  if (browserBackendPreference === 'remote-cdp') {
+    const cdpUrl = await ensureRemoteChromium();
+    const browser = await chromium.connectOverCDP(cdpUrl);
+    const context = browser.contexts()[0] ?? await browser.newContext();
+    const page = context.pages()[0] ?? await context.newPage();
+    const browserState: BrowserState = { context, page, browserName: 'chromium', connectionMode: 'remote-cdp' };
+    state.browserStates.set(sessionId, browserState);
+    return browserState;
+  }
+
   const session = await getGuestSession(state, sessionId);
   if (!session.display) {
     throw new Error('session does not expose DISPLAY');
@@ -158,7 +224,7 @@ async function ensureBrowser(state: ControlPlaneState, sessionId: string): Promi
     env: { ...process.env, DISPLAY: session.display },
   });
   const page = context.pages()[0] ?? await context.newPage();
-  const browserState: BrowserState = { context, page, browserName: 'firefox' };
+  const browserState: BrowserState = { context, page, browserName: 'firefox', connectionMode: 'display' };
   state.browserStates.set(sessionId, browserState);
   return browserState;
 }
@@ -274,6 +340,7 @@ async function handleBrowserAction(state: ControlPlaneState, sessionId: string, 
     case 'browser_open':
       await browser.page.goto(action.url, { waitUntil: 'domcontentloaded' });
       result = { url: browser.page.url(), title: await browser.page.title() };
+      state.browserSnapshots.set(sessionId, { lastUrl: String(result.url), fetchedAt: new Date().toISOString() });
       break;
     case 'browser_get_dom':
       result = {
@@ -283,11 +350,12 @@ async function handleBrowserAction(state: ControlPlaneState, sessionId: string, 
         console_logs: [],
         network_events: [],
       };
+      state.browserSnapshots.set(sessionId, { lastUrl: String(result.current_url ?? browser.page.url()), lastHtml: String(result.dom_html ?? ''), fetchedAt: new Date().toISOString() });
       break;
     case 'browser_click':
       if (action.selector) {
         await browser.page.locator(action.selector).first().click();
-        result = { mode: 'selector', selector: action.selector };
+        result = { mode: 'selector', selector: action.selector, clicked: true };
       } else if (typeof action.x === 'number' && typeof action.y === 'number') {
         const payload = toGuestAction({ kind: 'mouse_click', button: action.button, x: action.x, y: action.y, taskId: action.taskId });
         const receipt = await guestJson<ActionReceipt>(state, `/api/sessions/${sessionId}/actions`, { method: 'POST', body: JSON.stringify(payload) });
@@ -302,7 +370,8 @@ async function handleBrowserAction(state: ControlPlaneState, sessionId: string, 
         const locator = browser.page.locator(action.selector).first();
         await locator.click();
         await locator.fill(action.text);
-        result = { mode: 'selector', selector: action.selector };
+        const inputValue = await locator.inputValue().catch(() => action.text);
+        result = { mode: 'selector', selector: action.selector, input_value: inputValue };
       } else {
         const payload = toGuestAction({ kind: 'type_text', text: action.text, taskId: action.taskId });
         const receipt = await guestJson<ActionReceipt>(state, `/api/sessions/${sessionId}/actions`, { method: 'POST', body: JSON.stringify(payload) });
@@ -375,7 +444,7 @@ export function createRequestHandler(state: ControlPlaneState) {
       if (req.method === 'GET' && url.pathname === '/api/adapters') {
         json(res, 200, {
           adapters: [
-            { name: 'browser', structured: playwrightEnabled, fallback: 'desktop/browser_open + coordinate actions' },
+            { name: 'browser', structured: playwrightEnabled, backend: playwrightEnabled ? browserBackendPreference : 'desktop-fallback', fallback: 'desktop/browser_open + coordinate actions' },
             { name: 'terminal', structured: true, fallback: 'run_command/read_file/write_file' },
             { name: 'generic-desktop', structured: true, fallback: null }
           ]
@@ -385,25 +454,29 @@ export function createRequestHandler(state: ControlPlaneState) {
 
       if (req.method === 'POST' && url.pathname === '/api/sessions') {
         const body = await readJson(req);
-        const payload = await guestJson<{ session: SessionRecord }>(state, '/api/sessions', {
+        const upstream = await guestRequest(state, '/api/sessions', {
           method: 'POST',
           body: JSON.stringify(body),
         });
-        json(res, 201, payload);
+        json(res, upstream.status, upstream.payload);
         return;
       }
 
       const sessionMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)$/);
       if (sessionMatch && req.method === 'GET') {
-        const payload = await guestJson<{ session: SessionRecord }>(state, `/api/sessions/${sessionMatch[1]}`);
-        json(res, 200, { ...payload, browser_adapter: state.browserStates.has(sessionMatch[1]) });
+        const upstream = await guestRequest(state, `/api/sessions/${sessionMatch[1]}`);
+        if (upstream.status === 200) {
+          json(res, 200, { ...upstream.payload, browser_adapter: state.browserStates.has(sessionMatch[1]) });
+        } else {
+          json(res, upstream.status, upstream.payload);
+        }
         return;
       }
       if (sessionMatch && req.method === 'DELETE') {
         await closeBrowser(state, sessionMatch[1]);
-        const payload = await guestJson<{ ok: boolean }>(state, `/api/sessions/${sessionMatch[1]}`, { method: 'DELETE' });
+        const upstream = await guestRequest(state, `/api/sessions/${sessionMatch[1]}`, { method: 'DELETE' });
         state.actionHistory.delete(sessionMatch[1]);
-        json(res, 200, payload);
+        json(res, upstream.status, upstream.payload);
         return;
       }
 
@@ -419,23 +492,30 @@ export function createRequestHandler(state: ControlPlaneState) {
       const observationMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/observation$/);
       if (observationMatch && req.method === 'GET') {
         const sessionId = observationMatch[1];
-        const payload = await guestJson<Record<string, unknown>>(state, `/api/sessions/${sessionId}/observation`);
-        payload.screenshot_url = `/api/sessions/${sessionId}/screenshot?ts=${Date.now()}`;
-        payload.action_history = state.actionHistory.get(sessionId) ?? [];
-        json(res, 200, payload);
+        const upstream = await guestRequest(state, `/api/sessions/${sessionId}/observation`);
+        if (upstream.status === 200) {
+          upstream.payload.screenshot_url = `/api/sessions/${sessionId}/screenshot?ts=${Date.now()}`;
+          upstream.payload.action_history = state.actionHistory.get(sessionId) ?? [];
+        }
+        json(res, upstream.status, upstream.payload);
         return;
       }
 
       const actionsMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/actions$/);
       if (actionsMatch && req.method === 'GET') {
         const sessionId = actionsMatch[1];
-        const payload = await guestJson<RuntimeCapabilities>(state, `/api/sessions/${sessionId}/actions`);
-        json(res, 200, {
-          ...payload,
-          browser_mode: playwrightEnabled ? payload.browser_mode : 'desktop_fallback',
-          browser_adapter_enabled: playwrightEnabled,
-          browser_adapter: ['browser_open', 'browser_get_dom', 'browser_click', 'browser_type', 'browser_screenshot'],
-        });
+        const upstream = await guestRequest(state, `/api/sessions/${sessionId}/actions`);
+        if (upstream.status === 200) {
+          json(res, 200, {
+            ...upstream.payload,
+            browser_mode: playwrightEnabled ? browserBackendPreference : 'desktop_fallback',
+            browser_adapter_enabled: playwrightEnabled,
+            browser_adapter_backend: playwrightEnabled ? browserBackendPreference : 'desktop-fallback',
+            browser_adapter: ['browser_open', 'browser_get_dom', 'browser_click', 'browser_type', 'browser_screenshot'],
+          });
+        } else {
+          json(res, upstream.status, upstream.payload);
+        }
         return;
       }
       if (actionsMatch && req.method === 'POST') {
@@ -445,12 +525,19 @@ export function createRequestHandler(state: ControlPlaneState) {
         if (action.kind.startsWith('browser_')) {
           receipt = await handleBrowserAction(state, sessionId, action as BrowserAction);
         } else {
-          receipt = await guestJson<ActionReceipt>(state, `/api/sessions/${sessionId}/actions`, {
+          const upstream = await guestRequest(state, `/api/sessions/${sessionId}/actions`, {
             method: 'POST',
             body: JSON.stringify(toGuestAction(action)),
           });
-          pushHistory(state, sessionId, { action: action as unknown as JsonObject, receipt: receipt as unknown as JsonObject, source: 'guest-runtime' });
-          attachReceiptToTask(state, action.taskId, receipt);
+          if (upstream.status === 200) {
+            receipt = upstream.payload as ActionReceipt;
+            pushHistory(state, sessionId, { action: action as unknown as JsonObject, receipt: receipt as unknown as JsonObject, source: 'guest-runtime' });
+            attachReceiptToTask(state, action.taskId, receipt);
+            json(res, 200, receipt);
+          } else {
+            json(res, upstream.status, upstream.payload);
+          }
+          return;
         }
         json(res, 200, receipt);
         return;

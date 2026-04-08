@@ -10,6 +10,10 @@ Adapters extend the platform with richer app-specific behavior while preserving 
 ## Capability model
 Each session exposes capability flags. Clients should inspect `GET /api/sessions/:id/actions` or the SDK equivalent before assuming structured adapters exist.
 
+## Browser adapter modes
+- `desktop-fallback`: browser open + coordinate/generic desktop actions
+- `remote-cdp`: DOM-aware browser automation via a Docker-managed Chromium sidecar
+
 ## Fallback rules
 - If a structured adapter is unavailable, prefer explicit fallback to generic desktop actions.
 - If no safe fallback exists, return a structured error.
@@ -18,4 +22,5 @@ Each session exposes capability flags. Clients should inspect `GET /api/sessions
 ## Recommended future shape
 - Move browser specialization behind a generic adapter registry.
 - Add editor/file-manager adapters that can negotiate capabilities per sandbox image.
+- Add a `vm-bridge` adapter once the QEMU guest runtime bridge exists.
 - Keep adapter contracts vendor-neutral and machine-readable.

@@ -10,26 +10,30 @@
 - `packages/ts-sdk` and `python/sdk`: client SDKs
 
 ## Sandbox strategy
-- **Production target:** QEMU/KVM Linux VM
-- **Implemented local fallback:** Xvfb-backed session provider
-- Each session gets its own display id and artifact directory.
+- **Production target:** QEMU/KVM Linux VM with an in-guest runtime bridge.
+- **Implemented local fallback:** Xvfb-backed session provider.
+- **Implemented VM provisioning path:** Docker-managed `qemux/qemu` container for viewer-first VM access.
+- Each session gets its own artifact directory.
 
 ## Observation strategy
 - Screenshot-first.
 - Optional X11 metadata (active window and cursor position) when tools are available.
 - Clear split between `raw` machine observations and `summary` fields intended for models/operators.
+- Viewer-only QEMU sessions intentionally return bridge-unavailable errors instead of synthetic screenshots.
 
 ## Action strategy
-- Rust guest-runtime handles desktop input, shell/filesystem, app launch, and screenshot capture.
+- Rust guest-runtime handles desktop input, shell/filesystem, app launch, and screenshot capture for Xvfb sessions.
 - TypeScript control plane layers on task tracking and browser specialization.
 - Every action returns a structured receipt or structured error envelope.
+- QEMU sessions advertise `bridge_status: viewer_only` until a guest runtime bridge is available.
 
 ## Browser strategy
 - `browser_open` always has a desktop fallback by launching the configured browser in the sandbox.
-- DOM-aware Playwright control is explicitly gated behind `ACU_ENABLE_PLAYWRIGHT=1`.
-- When Playwright is unavailable, the system still supports visible browser open, fetched-HTML DOM snapshots when possible, and explicit structured errors for unsupported selector-driven actions.
+- DOM-aware automation is explicitly gated behind `ACU_ENABLE_PLAYWRIGHT=1`.
+- When enabled, the control plane can spawn a Docker-managed `chromedp/headless-shell` container and connect through CDP (`browser_adapter_backend: remote-cdp`).
+- When DOM-aware browser tooling is unavailable, the system returns structured `browser_dom_unavailable` errors instead of pretending success.
 
-## Deployment shape
-- Run `guest-runtime` close to the sandbox provider.
-- Run `control-plane` as the operator/API surface.
-- Optionally run both via `@acu/sandbox-runner` or `scripts/dev-start.sh`.
+## QEMU strategy
+- The current QEMU path provisions a real Linux VM container via `qemux/qemu`, using `BOOT=<image>` and `KVM=N` when `/dev/kvm` is unavailable.
+- The control plane records `viewer_url` so operators or future browser-driven agents can attach to the VM web viewer.
+- The next architectural step is installing and exposing the Rust guest runtime inside the VM so the same explicit action contract works across both Xvfb and VM providers.

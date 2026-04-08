@@ -26,8 +26,9 @@ class ComputerUseClient:
     def list_adapters(self) -> Any:
         return self._request("/api/adapters")
 
-    def create_session(self, provider: str = "xvfb", width: int = 1440, height: int = 900) -> Any:
-        return self._request("/api/sessions", "POST", {"provider": provider, "width": width, "height": height})
+    def create_session(self, provider: str = "xvfb", width: int = 1440, height: int = 900, **options: Any) -> Any:
+        payload = {"provider": provider, "width": width, "height": height, **options}
+        return self._request("/api/sessions", "POST", payload)
 
     def get_observation(self, session_id: str) -> Any:
         return self._request(f"/api/sessions/{session_id}/observation")
