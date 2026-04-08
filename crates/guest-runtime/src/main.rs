@@ -79,6 +79,22 @@ struct QemuBridgeMonitor {
     interval: Duration,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QemuLaunchMode {
+    PublishedPorts,
+    BridgeNetwork,
+}
+
+struct QemuContainerSpec<'a> {
+    container_name: &'a str,
+    image: &'a str,
+    boot: &'a str,
+    artifacts_dir: &'a Path,
+    viewer_port: u16,
+    runtime_port: u16,
+    disable_kvm: bool,
+}
+
 #[tokio::main]
 async fn main() {
     let port = arg_value("--port")
@@ -394,46 +410,27 @@ async fn create_qemu_session(
         .disable_kvm
         .unwrap_or_else(|| !Path::new("/dev/kvm").exists());
 
-    let mut args = vec![
-        "run".to_string(),
-        "-d".to_string(),
-        "--rm".to_string(),
-        "--name".to_string(),
-        container_name.clone(),
-        "-p".to_string(),
-        format!("127.0.0.1::{}", state.qemu_viewer_port),
-        "-p".to_string(),
-        format!("127.0.0.1::{}", state.qemu_guest_runtime_port),
-        "-e".to_string(),
-        format!("BOOT={boot}"),
-        "-v".to_string(),
-        format!("{}:/storage", absolute_artifacts_dir.to_string_lossy()),
-    ];
-    if disable_kvm {
-        args.push("-e".to_string());
-        args.push("KVM=N".to_string());
-    }
-    args.push(image.clone());
-
-    let output = Command::new("docker")
-        .args(&args)
-        .output()
-        .await
-        .map_err(|error| {
-            (
+    let container_spec = QemuContainerSpec {
+        container_name: &container_name,
+        image: &image,
+        boot: &boot,
+        artifacts_dir: &absolute_artifacts_dir,
+        viewer_port: state.qemu_viewer_port,
+        runtime_port: state.qemu_guest_runtime_port,
+        disable_kvm,
+    };
+    let launch_mode = match launch_qemu_container(&container_spec).await {
+        Ok(mode) => mode,
+        Err(message) => {
+            return Err((
                 StatusCode::FAILED_DEPENDENCY,
-                json!({ "code": "docker_spawn_failed", "message": error.to_string() }),
-            )
-        })?;
-    if !output.status.success() {
-        return Err((
-            StatusCode::FAILED_DEPENDENCY,
-            json!({
-                "code": "qemu_container_launch_failed",
-                "message": String::from_utf8_lossy(&output.stderr),
-            }),
-        ));
-    }
+                json!({
+                    "code": "qemu_container_launch_failed",
+                    "message": message,
+                }),
+            ));
+        }
+    };
 
     tokio::time::sleep(Duration::from_secs(8)).await;
     let running = docker_output(&["inspect", "-f", "{{.State.Running}}", &container_name]).await?;
@@ -451,39 +448,35 @@ async fn create_qemu_session(
             }),
         ));
     }
-    let viewer_url = match docker_mapped_port(&container_name, state.qemu_viewer_port).await? {
-        Some(port) => format!("http://127.0.0.1:{port}"),
-        None => {
-            let ip = docker_output(&[
-                "inspect",
-                "-f",
-                "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
-                &container_name,
-            ])
-            .await?
-            .trim()
-            .to_string();
-            if ip.is_empty() {
-                let _ = docker_output(&["rm", "-f", &container_name]).await;
-                return Err((
-                    StatusCode::FAILED_DEPENDENCY,
-                    json!({
-                        "code": "qemu_container_ip_missing",
-                        "message": "qemu container started but did not expose a viewer port or bridge-network IP",
-                    }),
-                ));
-            }
-            format!("http://{ip}:{}", state.qemu_viewer_port)
+    let container_ip = docker_container_ip(&container_name).await?;
+    let viewer_port = docker_mapped_port(&container_name, state.qemu_viewer_port).await?;
+    let runtime_port = docker_mapped_port(&container_name, state.qemu_guest_runtime_port).await?;
+    let viewer_url = resolve_qemu_endpoint(viewer_port, &container_ip, state.qemu_viewer_port)
+        .ok_or_else(|| {
+            (
+                StatusCode::FAILED_DEPENDENCY,
+                json!({
+                    "code": "qemu_container_ip_missing",
+                    "message": "qemu container started but did not expose a viewer port or bridge-network IP",
+                }),
+            )
+        })?;
+    let remote_runtime_url = match launch_mode {
+        QemuLaunchMode::PublishedPorts => {
+            runtime_port.map(|port| format!("http://127.0.0.1:{port}"))
+        }
+        QemuLaunchMode::BridgeNetwork => {
+            resolve_qemu_endpoint(runtime_port, &container_ip, state.qemu_guest_runtime_port)
         }
     };
-    let remote_runtime_url = docker_mapped_port(&container_name, state.qemu_guest_runtime_port)
-        .await?
-        .map(|port| format!("http://127.0.0.1:{port}"));
     let mut capabilities = vec![
         "vm".to_string(),
         "viewer".to_string(),
         "qemu_container".to_string(),
     ];
+    if launch_mode == QemuLaunchMode::BridgeNetwork {
+        capabilities.push("bridge_network_access".to_string());
+    }
     if remote_runtime_url.is_some() {
         capabilities.push("guest_runtime_http".to_string());
     }
@@ -675,6 +668,74 @@ async fn docker_output(args: &[&str]) -> Result<String, (StatusCode, Value)> {
     }
 }
 
+async fn launch_qemu_container(spec: &QemuContainerSpec<'_>) -> Result<QemuLaunchMode, String> {
+    let primary = docker_run_qemu_container(spec, QemuLaunchMode::PublishedPorts).await?;
+    if primary.status.success() {
+        return Ok(QemuLaunchMode::PublishedPorts);
+    }
+
+    let primary_stderr = String::from_utf8_lossy(&primary.stderr).into_owned();
+    if !should_retry_qemu_without_published_ports(&primary_stderr) {
+        return Err(primary_stderr);
+    }
+
+    let fallback = docker_run_qemu_container(spec, QemuLaunchMode::BridgeNetwork).await?;
+    if fallback.status.success() {
+        Ok(QemuLaunchMode::BridgeNetwork)
+    } else {
+        let fallback_stderr = String::from_utf8_lossy(&fallback.stderr);
+        Err(format!(
+            "{}\nbridge-network retry failed:\n{}",
+            primary_stderr, fallback_stderr
+        ))
+    }
+}
+
+async fn docker_run_qemu_container(
+    spec: &QemuContainerSpec<'_>,
+    launch_mode: QemuLaunchMode,
+) -> Result<std::process::Output, String> {
+    let mut args = vec![
+        "run".to_string(),
+        "-d".to_string(),
+        "--rm".to_string(),
+        "--name".to_string(),
+        spec.container_name.to_string(),
+    ];
+    if launch_mode == QemuLaunchMode::PublishedPorts {
+        args.push("-p".to_string());
+        args.push(format!("127.0.0.1::{}", spec.viewer_port));
+        args.push("-p".to_string());
+        args.push(format!("127.0.0.1::{}", spec.runtime_port));
+    }
+    args.push("-e".to_string());
+    args.push(format!("BOOT={}", spec.boot));
+    args.push("-e".to_string());
+    args.push(format!("USER_PORTS=22,{}", spec.runtime_port));
+    args.push("-v".to_string());
+    args.push(format!("{}:/storage", spec.artifacts_dir.to_string_lossy()));
+    if spec.disable_kvm {
+        args.push("-e".to_string());
+        args.push("KVM=N".to_string());
+    } else {
+        args.push("--device".to_string());
+        args.push("/dev/kvm".to_string());
+    }
+    if Path::new("/dev/net/tun").exists() {
+        args.push("--device".to_string());
+        args.push("/dev/net/tun".to_string());
+    }
+    args.push("--cap-add".to_string());
+    args.push("NET_ADMIN".to_string());
+    args.push(spec.image.to_string());
+
+    Command::new("docker")
+        .args(&args)
+        .output()
+        .await
+        .map_err(|error| error.to_string())
+}
+
 async fn docker_mapped_port(
     container_name: &str,
     container_port: u16,
@@ -697,11 +758,46 @@ async fn docker_mapped_port(
     )))
 }
 
+async fn docker_container_ip(container_name: &str) -> Result<String, (StatusCode, Value)> {
+    Ok(docker_output(&[
+        "inspect",
+        "-f",
+        "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+        container_name,
+    ])
+    .await?
+    .trim()
+    .to_string())
+}
+
 fn parse_published_port(output: &str) -> Option<u16> {
     output
         .lines()
         .filter_map(|line| line.trim().rsplit(':').next())
         .find_map(|port| port.parse::<u16>().ok())
+}
+
+fn resolve_qemu_endpoint(
+    published_port: Option<u16>,
+    container_ip: &str,
+    container_port: u16,
+) -> Option<String> {
+    if let Some(port) = published_port {
+        return Some(format!("http://127.0.0.1:{port}"));
+    }
+    let trimmed_ip = container_ip.trim();
+    if trimmed_ip.is_empty() {
+        None
+    } else {
+        Some(format!("http://{trimmed_ip}:{container_port}"))
+    }
+}
+
+fn should_retry_qemu_without_published_ports(stderr: &str) -> bool {
+    let stderr = stderr.to_ascii_lowercase();
+    stderr.contains("unable to enable dnat rule")
+        || stderr.contains("no chain/target/match by that name")
+        || stderr.contains("driver failed programming external connectivity")
 }
 
 async fn bridge_json<T: DeserializeOwned>(
@@ -1154,7 +1250,10 @@ async fn next_display(state: &AppState) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{merge_capabilities, parse_published_port};
+    use super::{
+        merge_capabilities, parse_published_port, resolve_qemu_endpoint,
+        should_retry_qemu_without_published_ports,
+    };
 
     #[test]
     fn parses_published_port_from_docker_output() {
@@ -1175,5 +1274,31 @@ mod tests {
             merged,
             vec!["shell".to_string(), "viewer".to_string(), "vm".to_string()]
         );
+    }
+
+    #[test]
+    fn resolves_qemu_endpoint_from_published_port_or_bridge_ip() {
+        assert_eq!(
+            resolve_qemu_endpoint(Some(49153), "172.17.0.2", 4001),
+            Some("http://127.0.0.1:49153".to_string())
+        );
+        assert_eq!(
+            resolve_qemu_endpoint(None, "172.17.0.2", 4001),
+            Some("http://172.17.0.2:4001".to_string())
+        );
+        assert_eq!(resolve_qemu_endpoint(None, "", 4001), None);
+    }
+
+    #[test]
+    fn detects_nat_failures_that_need_bridge_retry() {
+        assert!(should_retry_qemu_without_published_ports(
+            "Unable to enable DNAT rule: iptables: No chain/target/match by that name"
+        ));
+        assert!(should_retry_qemu_without_published_ports(
+            "driver failed programming external connectivity on endpoint"
+        ));
+        assert!(!should_retry_qemu_without_published_ports(
+            "manifest for qemux/qemu:missing not found"
+        ));
     }
 }
