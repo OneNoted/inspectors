@@ -1,0 +1,17 @@
+{
+  "id": "qemu-action-bridge",
+  "provider": "qemu",
+  "description": "Prove that a bridged QEMU session can execute non-trivial runtime actions through the guest bridge.",
+  "success": [
+    "observation succeeds after runtime_ready",
+    "screenshot retrieval succeeds after runtime_ready",
+    "at least one shell/filesystem action succeeds",
+    "at least one desktop interaction action succeeds"
+  ],
+  "artifacts": [
+    "observation payload",
+    "screenshot artifact",
+    "action receipts",
+    "capability snapshot"
+  ]
+}

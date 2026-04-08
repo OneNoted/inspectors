@@ -1,0 +1,17 @@
+{
+  "id": "qemu-bridge-bootstrap",
+  "provider": "qemu",
+  "description": "Create a QEMU session, wait for bridge_status=runtime_ready, and capture readiness evidence without losing viewer access.",
+  "success": [
+    "session reaches bridge_status=runtime_ready",
+    "viewer_url remains present for debugging",
+    "runtime_base_url or equivalent runtime reachability evidence is recorded",
+    "guest bootstrap logs and bridge health timestamps are retained"
+  ],
+  "artifacts": [
+    "session record snapshots",
+    "guest bootstrap log",
+    "bridge health timestamps",
+    "viewer/debug reference"
+  ]
+}
