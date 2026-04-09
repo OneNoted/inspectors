@@ -53,6 +53,28 @@ enum SessionProviderHandle {
     QemuDocker { container_name: String },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QemuSessionProfile {
+    Product,
+    Regression,
+}
+
+impl QemuSessionProfile {
+    fn from_request(request: &CreateSessionRequest) -> Self {
+        match request.qemu_profile.as_deref() {
+            Some("regression") => Self::Regression,
+            _ => Self::Product,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Product => "product",
+            Self::Regression => "regression",
+        }
+    }
+}
+
 #[derive(Clone)]
 struct RemoteBridgeHandle {
     base_url: String,
@@ -70,11 +92,13 @@ struct QemuBridgeMonitor {
     host_runtime_base_url: String,
     guest_display: String,
     browser_command: String,
+    qemu_profile: QemuSessionProfile,
     session_id: String,
     width: u32,
     height: u32,
     artifacts_dir: PathBuf,
     remote_runtime_url: String,
+    viewer_url: String,
     timeout: Duration,
     interval: Duration,
 }
@@ -97,6 +121,9 @@ struct QemuContainerSpec<'a> {
 
 #[tokio::main]
 async fn main() {
+    let bind_host = arg_value("--host")
+        .or_else(|| std::env::var("ACU_BIND_HOST").ok())
+        .unwrap_or_else(|| "127.0.0.1".to_string());
     let port = arg_value("--port")
         .and_then(|value| value.parse().ok())
         .unwrap_or(4001);
@@ -158,7 +185,9 @@ async fn main() {
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http());
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let addr: SocketAddr = format!("{bind_host}:{port}")
+        .parse()
+        .expect("parse guest runtime bind address");
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .expect("bind guest runtime");
@@ -278,6 +307,7 @@ async fn create_xvfb_session(
     let record = SessionRecord {
         id: session_id.clone(),
         provider: "xvfb".to_string(),
+        qemu_profile: None,
         display: Some(display),
         width: request.width,
         height: request.height,
@@ -289,6 +319,7 @@ async fn create_xvfb_session(
         runtime_base_url: Some(state.runtime_base_url.clone()),
         viewer_url: None,
         bridge_status: Some("runtime_ready".to_string()),
+        readiness_state: Some("runtime_ready".to_string()),
         bridge_error: None,
     };
 
@@ -337,6 +368,7 @@ async fn create_existing_display_session(
     let record = SessionRecord {
         id: session_id.clone(),
         provider: "display".to_string(),
+        qemu_profile: None,
         display: Some(display),
         width: request.width,
         height: request.height,
@@ -348,6 +380,7 @@ async fn create_existing_display_session(
         runtime_base_url: Some(state.runtime_base_url.clone()),
         viewer_url: None,
         bridge_status: Some("runtime_ready".to_string()),
+        readiness_state: Some("runtime_ready".to_string()),
         bridge_error: None,
     };
 
@@ -378,6 +411,7 @@ async fn create_qemu_session(
         ));
     }
 
+    let qemu_profile = QemuSessionProfile::from_request(&request);
     let session_id = Uuid::new_v4().to_string();
     let artifacts_dir = state.artifacts_root.join(&session_id);
     tokio::fs::create_dir_all(&artifacts_dir)
@@ -473,6 +507,7 @@ async fn create_qemu_session(
         "vm".to_string(),
         "viewer".to_string(),
         "qemu_container".to_string(),
+        format!("qemu_profile:{}", qemu_profile.as_str()),
     ];
     if launch_mode == QemuLaunchMode::BridgeNetwork {
         capabilities.push("bridge_network_access".to_string());
@@ -488,6 +523,7 @@ async fn create_qemu_session(
     let record = SessionRecord {
         id: session_id.clone(),
         provider: "qemu".to_string(),
+        qemu_profile: Some(qemu_profile.as_str().to_string()),
         display: None,
         width: request.width,
         height: request.height,
@@ -495,10 +531,11 @@ async fn create_qemu_session(
         created_at: chrono::Utc::now(),
         artifacts_dir: artifacts_dir.to_string_lossy().to_string(),
         capabilities,
-        browser_command: None,
+        browser_command: Some(state.browser_command.clone()),
         runtime_base_url: None,
         viewer_url: Some(viewer_url.clone()),
         bridge_status: Some(bridge_status),
+        readiness_state: Some("booting".to_string()),
         bridge_error: None,
     };
 
@@ -524,11 +561,13 @@ async fn create_qemu_session(
             host_runtime_base_url: state.runtime_base_url.clone(),
             guest_display: state.qemu_guest_display.clone(),
             browser_command: state.browser_command.clone(),
+            qemu_profile,
             session_id,
             width: request.width,
             height: request.height,
             artifacts_dir,
             remote_runtime_url,
+            viewer_url,
             timeout: state.qemu_bridge_probe_timeout,
             interval: state.qemu_bridge_probe_interval,
         }));
@@ -545,6 +584,26 @@ async fn monitor_qemu_bridge(monitor: QemuBridgeMonitor) {
 
     while tokio::time::Instant::now() < deadline {
         attempts += 1;
+        if monitor.qemu_profile == QemuSessionProfile::Product
+            && monitor
+                .http_client
+                .get(&monitor.viewer_url)
+                .send()
+                .await
+                .map(|response| response.status().is_success())
+                .unwrap_or(false)
+        {
+            let mut guard = monitor.sessions.lock().await;
+            if let Some(handle) = guard.get_mut(&monitor.session_id) {
+                promote_readiness(&mut handle.record, "desktop_ready");
+            }
+        }
+        {
+            let mut guard = monitor.sessions.lock().await;
+            if let Some(handle) = guard.get_mut(&monitor.session_id) {
+                promote_readiness(&mut handle.record, "bridge_listening");
+            }
+        }
         let health = bridge_json::<Value>(
             &monitor.http_client,
             &monitor.remote_runtime_url,
@@ -554,15 +613,27 @@ async fn monitor_qemu_bridge(monitor: QemuBridgeMonitor) {
         .await;
         match health {
             Ok(_) => {
+                {
+                    let mut guard = monitor.sessions.lock().await;
+                    if let Some(handle) = guard.get_mut(&monitor.session_id) {
+                        promote_readiness(&mut handle.record, "bridge_attached");
+                    }
+                }
                 let create_request = CreateSessionRequest {
-                    provider: "display".to_string(),
+                    provider: match monitor.qemu_profile {
+                        QemuSessionProfile::Product => "display".to_string(),
+                        QemuSessionProfile::Regression => "xvfb".to_string(),
+                    },
                     width: monitor.width,
                     height: monitor.height,
-                    display: Some(monitor.guest_display.clone()),
+                    display: (monitor.qemu_profile == QemuSessionProfile::Product)
+                        .then(|| monitor.guest_display.clone()),
                     browser_command: Some(monitor.browser_command.clone()),
                     boot: None,
                     container_image: None,
                     disable_kvm: None,
+                    qemu_profile: None,
+                    shared_host_path: None,
                 };
                 match bridge_json::<BridgeSessionResponse>(
                     &monitor.http_client,
@@ -583,6 +654,7 @@ async fn monitor_qemu_bridge(monitor: QemuBridgeMonitor) {
                             handle.record.runtime_base_url =
                                 Some(monitor.host_runtime_base_url.clone());
                             handle.record.bridge_status = Some("runtime_ready".to_string());
+                            promote_readiness(&mut handle.record, "runtime_ready");
                             handle.record.bridge_error = None;
                             handle.record.capabilities = merge_capabilities(
                                 &handle.record.capabilities,
@@ -639,6 +711,7 @@ async fn monitor_qemu_bridge(monitor: QemuBridgeMonitor) {
     let mut guard = monitor.sessions.lock().await;
     if let Some(handle) = guard.get_mut(&monitor.session_id) {
         handle.record.bridge_status = Some("failed".to_string());
+        promote_readiness(&mut handle.record, "failed");
         handle.record.bridge_error = Some(bridge_error);
     }
 }
@@ -832,6 +905,29 @@ fn merge_capabilities(left: &[String], right: &[String]) -> Vec<String> {
     merged.extend(left.iter().cloned());
     merged.extend(right.iter().cloned());
     merged.into_iter().collect()
+}
+
+fn readiness_rank(stage: &str) -> usize {
+    match stage {
+        "booting" => 0,
+        "desktop_ready" => 1,
+        "bridge_listening" => 2,
+        "bridge_attached" => 3,
+        "runtime_ready" => 4,
+        "failed" => 5,
+        _ => 0,
+    }
+}
+
+fn promote_readiness(record: &mut SessionRecord, next_stage: &str) {
+    let current_rank = record
+        .readiness_state
+        .as_deref()
+        .map(readiness_rank)
+        .unwrap_or(0);
+    if readiness_rank(next_stage) >= current_rank {
+        record.readiness_state = Some(next_stage.to_string());
+    }
 }
 
 async fn proxy_bridge_json<T: DeserializeOwned>(
@@ -1189,8 +1285,10 @@ fn provider_bridge_unavailable_response(record: &SessionRecord, reason: &str) ->
         category: "provider".to_string(),
         details: json!({
             "provider": record.provider,
+            "qemu_profile": record.qemu_profile,
             "viewer_url": record.viewer_url,
             "bridge_status": record.bridge_status,
+            "readiness_state": record.readiness_state,
             "bridge_error": record.bridge_error,
         }),
         artifact_refs: record

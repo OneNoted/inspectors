@@ -332,12 +332,15 @@ pub struct CreateSessionRequest {
     pub boot: Option<String>,
     pub container_image: Option<String>,
     pub disable_kvm: Option<bool>,
+    pub qemu_profile: Option<String>,
+    pub shared_host_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionRecord {
     pub id: String,
     pub provider: String,
+    pub qemu_profile: Option<String>,
     pub display: Option<String>,
     pub width: u32,
     pub height: u32,
@@ -350,6 +353,7 @@ pub struct SessionRecord {
     pub runtime_base_url: Option<String>,
     pub viewer_url: Option<String>,
     pub bridge_status: Option<String>,
+    pub readiness_state: Option<String>,
     pub bridge_error: Option<StructuredError>,
 }
 

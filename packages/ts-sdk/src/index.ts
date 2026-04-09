@@ -117,11 +117,14 @@ export interface CreateSessionRequest {
   boot?: string;
   container_image?: string;
   disable_kvm?: boolean;
+  qemu_profile?: 'product' | 'regression';
+  shared_host_path?: string;
 }
 
 export interface SessionRecord {
   id: string;
   provider: SessionProvider;
+  qemu_profile?: 'product' | 'regression' | null;
   display?: string | null;
   width: number;
   height: number;
@@ -133,6 +136,7 @@ export interface SessionRecord {
   runtime_base_url?: string | null;
   viewer_url?: string | null;
   bridge_status?: string | null;
+  readiness_state?: string | null;
   bridge_error?: StructuredError | null;
 }
 

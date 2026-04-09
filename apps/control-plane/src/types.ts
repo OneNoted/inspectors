@@ -42,6 +42,7 @@ export interface RuntimeCapabilities {
 export interface SessionRecord {
   id: string;
   provider: string;
+  qemu_profile?: string | null;
   display?: string | null;
   width: number;
   height: number;
@@ -53,6 +54,7 @@ export interface SessionRecord {
   runtime_base_url?: string | null;
   viewer_url?: string | null;
   bridge_status?: string | null;
+  readiness_state?: string | null;
   bridge_error?: unknown;
 }
 

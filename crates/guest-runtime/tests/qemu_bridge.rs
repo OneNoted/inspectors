@@ -107,7 +107,9 @@ async fn qemu_sessions_report_viewer_only_until_the_bridge_is_ready() {
     );
     let session = &create_payload["session"];
     assert_eq!(session["provider"], "qemu");
+    assert_eq!(session["qemu_profile"], "product");
     assert_eq!(session["bridge_status"], "viewer_only");
+    assert_eq!(session["readiness_state"], "booting");
     assert!(session["viewer_url"].as_str().is_some());
 
     let session_id = session["id"].as_str().expect("session id");
@@ -141,6 +143,10 @@ async fn qemu_sessions_report_viewer_only_until_the_bridge_is_ready() {
     assert_eq!(
         observation_payload["error"]["details"]["bridge_status"],
         "viewer_only"
+    );
+    assert_eq!(
+        observation_payload["error"]["details"]["readiness_state"],
+        "booting"
     );
     assert_eq!(observation_payload["error"]["details"]["provider"], "qemu");
 
