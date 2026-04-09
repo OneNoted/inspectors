@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { connect } from 'node:net';
+import { gzipSync } from 'node:zlib';
 
 const { startControlPlaneServer } = await import('./server.js');
 
@@ -44,8 +45,13 @@ async function startHarness(): Promise<Harness> {
 
   const viewerServer = createServer((req: IncomingMessage, res: ServerResponse) => {
     if (req.url === '/' || req.url === '/index.html') {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-      res.end('<!doctype html><title>Viewer Root</title><script src="app/ui.js"></script>');
+      const body = gzipSync('<!doctype html><title>Viewer Root</title><script src="app/ui.js"></script>');
+      res.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
+        'content-encoding': 'gzip',
+        'content-length': String(body.length),
+      });
+      res.end(body);
       return;
     }
     if (req.url === '/app/ui.js') {
@@ -205,6 +211,7 @@ test('live-view route proxies viewer assets and rejects non-stream sessions', as
   try {
     const liveViewRoot = await fetch(`${harness.baseUrl}/api/sessions/qemu-product/live-view/`);
     assert.equal(liveViewRoot.status, 200);
+    assert.equal(liveViewRoot.headers.get('content-encoding'), null);
     assert.match(await liveViewRoot.text(), /Viewer Root/);
 
     const liveViewAsset = await fetch(`${harness.baseUrl}/api/sessions/qemu-product/live-view/app/ui.js`);

@@ -143,6 +143,16 @@ function writeUpgradeError(socket: Duplex, status: number, message: string): voi
   socket.destroy();
 }
 
+function copyProxyResponseHeaders(source: Headers, target: ServerResponse): void {
+  source.forEach((value, key) => {
+    const lowered = key.toLowerCase();
+    if (lowered === 'content-encoding' || lowered === 'content-length' || lowered === 'transfer-encoding') {
+      return;
+    }
+    target.setHeader(key, value);
+  });
+}
+
 export function toGuestAction(action: ActionRequest): JsonObject {
   const taskId = 'taskId' in action ? action.taskId : undefined;
   switch (action.kind) {
@@ -637,12 +647,13 @@ export function createRequestHandler(state: ControlPlaneState) {
           }
         }
         headers.set('host', upstreamBase.host);
+        headers.set('accept-encoding', 'identity');
         const upstream = await fetch(upstreamUrl, {
           method: req.method,
           headers,
         });
         res.statusCode = upstream.status;
-        upstream.headers.forEach((value, key) => res.setHeader(key, value));
+        copyProxyResponseHeaders(upstream.headers, res);
         if (req.method === 'HEAD') {
           res.end();
           return;
