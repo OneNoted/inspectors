@@ -3,92 +3,267 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Agent Computer Use Oversight</title>
+    <title>inspectors — agent computer use</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <main class="layout">
-      <section class="panel controls">
-        <h1>Agent Computer Use</h1>
-        <p class="subtle">Linux sandbox / desktop-use oversight UI</p>
-        <label>
-          Provider
-          <select id="session-provider">
-            <option value="xvfb">Local Xvfb</option>
-            <option value="qemu">QEMU VM</option>
-          </select>
-        </label>
-        <div id="qemu-options" hidden>
-          <label>
-            QEMU profile
-            <select id="qemu-profile">
-              <option value="product">Product guest (Ubuntu + GNOME)</option>
-              <option value="regression">Regression fixture</option>
-            </select>
-          </label>
-          <label>
-            Shared host path
-            <input id="shared-host-path" type="text" value="../taskers" />
-          </label>
+    <!-- Icon sprite -->
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+      <defs>
+        <symbol id="icon-refresh" viewBox="0 0 16 16">
+          <path d="M13.5 8a5.5 5.5 0 1 1-1.7-3.95"/>
+          <polyline points="13.5 1.5 13.5 4.5 10.5 4.5"/>
+        </symbol>
+        <symbol id="icon-shield" viewBox="0 0 16 16">
+          <path d="M8 1.5 13.5 4v4.5c0 3.3-2.4 5.6-5.5 6.5-3.1-0.9-5.5-3.2-5.5-6.5V4L8 1.5Z"/>
+        </symbol>
+        <symbol id="icon-play" viewBox="0 0 16 16">
+          <polygon points="4.5 3 12.5 8 4.5 13" fill="currentColor" stroke="none"/>
+        </symbol>
+        <symbol id="icon-pause" viewBox="0 0 16 16">
+          <rect x="4.5" y="3" width="2.5" height="10" fill="currentColor" stroke="none"/>
+          <rect x="9" y="3" width="2.5" height="10" fill="currentColor" stroke="none"/>
+        </symbol>
+        <symbol id="icon-check" viewBox="0 0 16 16">
+          <polyline points="3 8.5 6.5 12 13 4.5"/>
+        </symbol>
+        <symbol id="icon-x" viewBox="0 0 16 16">
+          <line x1="4" y1="4" x2="12" y2="12"/>
+          <line x1="12" y1="4" x2="4" y2="12"/>
+        </symbol>
+        <symbol id="icon-question" viewBox="0 0 16 16">
+          <circle cx="8" cy="8" r="6.25"/>
+          <path d="M6 6.25c0-1.1 0.9-2 2-2s2 0.8 2 1.8c0 1.2-2 1.4-2 2.7"/>
+          <circle cx="8" cy="11.75" r="0.35" fill="currentColor"/>
+        </symbol>
+        <symbol id="icon-bolt" viewBox="0 0 16 16">
+          <polygon points="9 1.5 3 9 7.5 9 6.5 14.5 13 7 8.5 7" fill="currentColor" stroke="none"/>
+        </symbol>
+        <symbol id="icon-terminal" viewBox="0 0 16 16">
+          <polyline points="3.5 5 6 8 3.5 11"/>
+          <line x1="7.5" y1="11.5" x2="12.5" y2="11.5"/>
+        </symbol>
+        <symbol id="icon-cube" viewBox="0 0 16 16">
+          <polygon points="8 1.5 14 4.75 14 11.25 8 14.5 2 11.25 2 4.75"/>
+          <polyline points="2 4.75 8 8 14 4.75"/>
+          <line x1="8" y1="8" x2="8" y2="14.5"/>
+        </symbol>
+        <symbol id="icon-external" viewBox="0 0 16 16">
+          <polyline points="9.5 2.5 13.5 2.5 13.5 6.5"/>
+          <line x1="13.5" y1="2.5" x2="7.5" y2="8.5"/>
+          <path d="M12 9.5V13a0.5 0.5 0 0 1-0.5 0.5H3A0.5 0.5 0 0 1 2.5 13V4.5A0.5 0.5 0 0 1 3 4h3.5"/>
+        </symbol>
+        <symbol id="icon-chevron" viewBox="0 0 16 16">
+          <polyline points="6 4 10 8 6 12"/>
+        </symbol>
+      </defs>
+    </svg>
+
+    <div class="app">
+      <!-- Top bar -->
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-dot"></span>
+          inspectors
         </div>
-        <label>
-          Attach existing session
-          <input id="existing-session" type="text" placeholder="Paste a session id or live-view URL" />
-        </label>
-        <div class="session-actions">
-          <button id="attach-session">Attach session</button>
-          <button id="clear-session" type="button">Clear</button>
+        <div class="session-chips" aria-live="polite"></div>
+        <!-- Raw summary stays in DOM for app.js; observer renders chips above -->
+        <p id="session-summary" hidden>No session</p>
+        <div class="topbar-spacer"></div>
+        <div class="ticker" data-fresh="false" aria-live="off">
+          <span class="ticker-dot"></span>updated <span class="ticker-time">—</span>
         </div>
-        <button id="create-session">Create session</button>
-        <button id="refresh-session">Refresh</button>
-        <p id="session-summary" class="status-line">No session</p>
-        <pre id="session-meta">No session</pre>
-        <label>
-          Task description
-          <textarea id="task-description">Launch Taskers inside the VM, create a new workspace, and capture proof artifacts.</textarea>
-        </label>
-        <button id="create-task">Create task</button>
-        <div class="task-controls">
-          <button data-task-action="pause">Pause</button>
-          <button data-task-action="resume">Resume</button>
-          <button data-task-action="complete">Complete</button>
-          <button data-task-action="reset">Reset</button>
-          <button data-task-action="terminate">Terminate</button>
+        <div class="topbar-actions">
+          <button id="refresh-session" class="btn btn-icon btn-ghost" title="Refresh  (R)" aria-label="Refresh">
+            <svg class="icon"><use href="#icon-refresh"/></svg>
+          </button>
+          <button id="shortcut-open" class="btn btn-icon btn-ghost" title="Keyboard shortcuts  (?)" aria-label="Shortcuts">
+            <svg class="icon"><use href="#icon-question"/></svg>
+          </button>
         </div>
-        <label>
-          Manual action payload
-          <textarea id="action-payload">{
+      </header>
+
+      <!-- Main two-column area -->
+      <div class="main">
+        <aside class="sidebar">
+          <!-- SESSION -->
+          <section class="group">
+            <div class="group-header">
+              <svg class="icon"><use href="#icon-cube"/></svg>
+              <h3>Session</h3>
+            </div>
+            <div class="field">
+              <label for="session-provider">Provider</label>
+              <select id="session-provider">
+                <option value="xvfb">Local Xvfb</option>
+                <option value="qemu">QEMU VM</option>
+              </select>
+            </div>
+            <div class="collapse">
+              <div class="collapse-inner">
+                <div id="qemu-options" hidden>
+                  <div class="field">
+                    <label for="qemu-profile">QEMU profile</label>
+                    <select id="qemu-profile">
+                      <option value="product">Product guest (Ubuntu + GNOME)</option>
+                      <option value="regression">Regression fixture</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label for="shared-host-path">Shared host path</label>
+                    <input id="shared-host-path" type="text" value="../taskers" />
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="field">
+              <label for="existing-session">Attach existing session</label>
+              <input id="existing-session" type="text" placeholder="session id or live-view URL" />
+            </div>
+            <div class="btn-row">
+              <button id="create-session" class="btn btn-primary">
+                <svg class="icon"><use href="#icon-bolt"/></svg>
+                Create
+              </button>
+              <button id="attach-session" class="btn">Attach</button>
+              <button id="clear-session" type="button" class="btn btn-ghost">Clear</button>
+            </div>
+          </section>
+
+          <!-- TASK -->
+          <section class="group">
+            <div class="group-header">
+              <svg class="icon"><use href="#icon-terminal"/></svg>
+              <h3>Task</h3>
+            </div>
+            <div class="field">
+              <label for="task-description">Description</label>
+              <textarea id="task-description">Launch Taskers inside the VM, create a new workspace, and capture proof artifacts.</textarea>
+            </div>
+            <div class="btn-row">
+              <button id="create-task" class="btn btn-primary">
+                <svg class="icon"><use href="#icon-bolt"/></svg>
+                Create task
+              </button>
+            </div>
+            <div class="btn-row">
+              <button data-task-action="pause" class="btn" title="Pause task">
+                <svg class="icon"><use href="#icon-pause"/></svg>
+                Pause
+              </button>
+              <button data-task-action="resume" class="btn" title="Resume task">
+                <svg class="icon"><use href="#icon-play"/></svg>
+                Resume
+              </button>
+              <button data-task-action="complete" class="btn" title="Mark complete">
+                <svg class="icon"><use href="#icon-check"/></svg>
+                Complete
+              </button>
+              <button data-task-action="reset" class="btn" title="Reset task">
+                <svg class="icon"><use href="#icon-refresh"/></svg>
+                Reset
+              </button>
+              <button data-task-action="terminate" class="btn btn-danger" title="Terminate task">
+                <svg class="icon"><use href="#icon-x"/></svg>
+                Terminate
+              </button>
+            </div>
+          </section>
+
+          <!-- ACTION -->
+          <section class="group">
+            <div class="group-header">
+              <svg class="icon"><use href="#icon-bolt"/></svg>
+              <h3>Manual action</h3>
+            </div>
+            <div class="field">
+              <label for="action-payload">Payload</label>
+              <textarea id="action-payload" class="code" spellcheck="false">{
   "kind": "run_command",
   "command": "echo ready"
 }</textarea>
-        </label>
-        <button id="run-action">Run action</button>
-      </section>
-      <section class="panel desktop">
-        <div class="desktop-header">
-          <div>
-            <h2 id="desktop-panel-title">Live desktop view</h2>
-            <p id="live-view-trust" class="subtle live-view-trust">No session selected.</p>
+            </div>
+            <div class="btn-row">
+              <button id="run-action" class="btn btn-primary">
+                <svg class="icon"><use href="#icon-play"/></svg>
+                Run action
+              </button>
+            </div>
+          </section>
+
+          <!-- Collapsible inspection blocks -->
+          <div class="details-stack">
+            <details class="collapsible">
+              <summary><span class="summary-label">Session metadata</span></summary>
+              <div class="collapsible-body">
+                <pre id="session-meta">No session</pre>
+              </div>
+            </details>
+            <details class="collapsible" open>
+              <summary><span class="summary-label">Latest observation</span></summary>
+              <div class="collapsible-body">
+                <pre id="observation"></pre>
+              </div>
+            </details>
+            <details class="collapsible">
+              <summary><span class="summary-label">Action history</span></summary>
+              <div class="collapsible-body">
+                <pre id="history"></pre>
+              </div>
+            </details>
+            <details class="collapsible">
+              <summary><span class="summary-label">Tasks / logs</span></summary>
+              <div class="collapsible-body">
+                <pre id="tasks"></pre>
+              </div>
+            </details>
           </div>
-          <div class="desktop-actions">
-            <span id="live-view-badge" class="status-badge">Unavailable</span>
-            <a id="viewer-link" href="#" target="_blank" rel="noreferrer" hidden>Open debug viewer</a>
+        </aside>
+
+        <!-- Stage -->
+        <section class="stage-wrap">
+          <div class="desktop-header">
+            <div class="desktop-title">
+              <h2 id="desktop-panel-title">Live desktop view</h2>
+              <div class="desktop-sub">
+                <span class="trust-chip">
+                  <svg class="icon"><use href="#icon-shield"/></svg>
+                  <span id="live-view-trust">No session selected.</span>
+                </span>
+                <span class="pill-wrap" data-state="unavailable">
+                  <span id="live-view-badge">Unavailable</span>
+                </span>
+              </div>
+            </div>
+            <div class="desktop-actions">
+              <a id="viewer-link" class="btn btn-ghost btn-external" href="#" target="_blank" rel="noreferrer" hidden>Debug viewer</a>
+            </div>
           </div>
-        </div>
-        <iframe id="viewer-frame" title="Live VM viewer" hidden></iframe>
-        <img id="desktop-image" alt="Desktop screenshot" hidden />
-        <div id="desktop-placeholder" class="desktop-placeholder">Live desktop unavailable</div>
-        <pre id="observation"></pre>
-      </section>
-      <section class="panel history">
-        <h2>Action history</h2>
-        <pre id="history"></pre>
-      </section>
-      <section class="panel logs">
-        <h2>Tasks / logs</h2>
-        <pre id="tasks"></pre>
-      </section>
-    </main>
+          <div class="desktop-stage" data-trust="unknown">
+            <iframe id="viewer-frame" title="Live VM viewer" hidden></iframe>
+            <img id="desktop-image" alt="Desktop screenshot" hidden />
+            <div id="desktop-placeholder">Live desktop unavailable</div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <!-- Shortcut cheatsheet -->
+    <dialog id="shortcut-sheet">
+      <h2>
+        <svg class="icon icon-lg"><use href="#icon-question"/></svg>
+        Keyboard shortcuts
+      </h2>
+      <div class="shortcut-list">
+        <div class="shortcut-row"><span>Refresh session</span><span class="keys"><kbd>R</kbd></span></div>
+        <div class="shortcut-row"><span>Focus task description</span><span class="keys"><kbd>C</kbd></span></div>
+        <div class="shortcut-row"><span>Clear session</span><span class="keys"><kbd>Esc</kbd></span></div>
+        <div class="shortcut-row"><span>Show / hide shortcuts</span><span class="keys"><kbd>?</kbd></span></div>
+      </div>
+      <div class="close-hint">Click outside or press Esc to close</div>
+    </dialog>
+
     <script src="/app.js" type="module"></script>
+    <script src="/ui-enhancements.js" type="module"></script>
   </body>
 </html>
