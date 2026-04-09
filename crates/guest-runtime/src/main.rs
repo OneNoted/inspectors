@@ -14,7 +14,8 @@ use axum::{
 };
 use desktop_core::{
     ActionReceipt, ActionRequest, ArtifactRef, CreateSessionRequest, Observation,
-    RuntimeCapabilities, SessionRecord, StructuredError, capability_descriptor,
+    LiveDesktopView, RuntimeCapabilities, SessionRecord, StructuredError,
+    capability_descriptor,
 };
 use linux_backend::{BackendOptions, LinuxBackend};
 use reqwest::Client;
@@ -25,6 +26,8 @@ use tokio::sync::Mutex;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
+
+const SCREENSHOT_POLL_INTERVAL_MS: u64 = 3_000;
 
 #[derive(Clone)]
 struct AppState {
@@ -79,6 +82,83 @@ impl QemuSessionProfile {
 struct RemoteBridgeHandle {
     base_url: String,
     session_id: Option<String>,
+}
+
+fn derive_live_desktop_view(record: &SessionRecord) -> LiveDesktopView {
+    match record.provider.as_str() {
+        "qemu" => {
+            let debug_url = record.viewer_url.clone();
+            match record.qemu_profile.as_deref() {
+                Some("regression") => LiveDesktopView {
+                    mode: "screenshot_poll".to_string(),
+                    status: if record.bridge_status.as_deref() == Some("runtime_ready") {
+                        "ready".to_string()
+                    } else {
+                        "unavailable".to_string()
+                    },
+                    provider_surface: "guest_xvfb_screenshot".to_string(),
+                    matches_action_plane: true,
+                    canonical_url: None,
+                    debug_url,
+                    reason: Some(
+                        "qemu regression keeps the VM viewer as debug-only because the action plane runs inside guest xvfb"
+                            .to_string(),
+                    ),
+                    refresh_interval_ms: Some(SCREENSHOT_POLL_INTERVAL_MS),
+                },
+                _ => LiveDesktopView {
+                    mode: "stream".to_string(),
+                    status: if record.viewer_url.is_some() {
+                        "ready".to_string()
+                    } else {
+                        "unavailable".to_string()
+                    },
+                    provider_surface: "qemu_novnc".to_string(),
+                    matches_action_plane: true,
+                    canonical_url: None,
+                    debug_url,
+                    reason: None,
+                    refresh_interval_ms: None,
+                },
+            }
+        }
+        "xvfb" => LiveDesktopView {
+            mode: "screenshot_poll".to_string(),
+            status: "ready".to_string(),
+            provider_surface: "guest_xvfb_screenshot".to_string(),
+            matches_action_plane: true,
+            canonical_url: None,
+            debug_url: None,
+            reason: Some("xvfb is an honest local/dev screenshot fallback without a live desktop stream".to_string()),
+            refresh_interval_ms: Some(SCREENSHOT_POLL_INTERVAL_MS),
+        },
+        "display" => LiveDesktopView {
+            mode: "screenshot_poll".to_string(),
+            status: "ready".to_string(),
+            provider_surface: "display_screenshot".to_string(),
+            matches_action_plane: true,
+            canonical_url: None,
+            debug_url: None,
+            reason: Some("display sessions expose screenshot polling only".to_string()),
+            refresh_interval_ms: Some(SCREENSHOT_POLL_INTERVAL_MS),
+        },
+        _ => LiveDesktopView {
+            mode: "unavailable".to_string(),
+            status: "unavailable".to_string(),
+            provider_surface: "none".to_string(),
+            matches_action_plane: false,
+            canonical_url: None,
+            debug_url: record.viewer_url.clone(),
+            reason: Some("live desktop view is unavailable for this provider".to_string()),
+            refresh_interval_ms: None,
+        },
+    }
+}
+
+fn enrich_session_record(record: &SessionRecord) -> SessionRecord {
+    let mut enriched = record.clone();
+    enriched.live_desktop_view = Some(derive_live_desktop_view(record));
+    enriched
 }
 
 #[derive(serde::Deserialize)]
@@ -229,7 +309,10 @@ async fn create_session(
     Json(request): Json<CreateSessionRequest>,
 ) -> Response {
     match create_session_impl(&state, request).await {
-        Ok(session) => (StatusCode::CREATED, Json(json!({ "session": session }))).into_response(),
+        Ok(session) => {
+            (StatusCode::CREATED, Json(json!({ "session": enrich_session_record(&session) })))
+                .into_response()
+        }
         Err((status, error)) => (status, Json(json!({ "error": error }))).into_response(),
     }
 }
@@ -240,7 +323,7 @@ async fn list_sessions(State(state): State<AppState>) -> Response {
         .lock()
         .await
         .values()
-        .map(|handle| handle.record.clone())
+        .map(|handle| enrich_session_record(&handle.record))
         .collect::<Vec<_>>();
     (StatusCode::OK, Json(json!({ "sessions": sessions }))).into_response()
 }
@@ -337,6 +420,7 @@ async fn create_xvfb_session(
         browser_command: Some(state.browser_command.clone()),
         runtime_base_url: Some(state.runtime_base_url.clone()),
         viewer_url: None,
+        live_desktop_view: None,
         bridge_status: Some("runtime_ready".to_string()),
         readiness_state: Some("runtime_ready".to_string()),
         bridge_error: None,
@@ -398,6 +482,7 @@ async fn create_existing_display_session(
         browser_command: Some(browser_command),
         runtime_base_url: Some(state.runtime_base_url.clone()),
         viewer_url: None,
+        live_desktop_view: None,
         bridge_status: Some("runtime_ready".to_string()),
         readiness_state: Some("runtime_ready".to_string()),
         bridge_error: None,
@@ -591,6 +676,7 @@ async fn create_qemu_session(
         browser_command: Some(state.browser_command.clone()),
         runtime_base_url: None,
         viewer_url: Some(viewer_url.clone()),
+        live_desktop_view: None,
         bridge_status: Some(bridge_status),
         readiness_state: Some("booting".to_string()),
         bridge_error: None,
@@ -1302,7 +1388,10 @@ async fn proxy_bridge_bytes(
 
 async fn get_session(State(state): State<AppState>, AxumPath(id): AxumPath<String>) -> Response {
     match session_snapshot(&state, &id).await {
-        Some(session) => (StatusCode::OK, Json(json!({ "session": session }))).into_response(),
+        Some(session) => {
+            (StatusCode::OK, Json(json!({ "session": enrich_session_record(&session) })))
+                .into_response()
+        }
         None => (
             StatusCode::NOT_FOUND,
             Json(json!({ "error": "session not found" })),
@@ -1525,6 +1614,7 @@ fn provider_bridge_unavailable_response(record: &SessionRecord, reason: &str) ->
             "provider": record.provider,
             "qemu_profile": record.qemu_profile,
             "viewer_url": record.viewer_url,
+            "live_desktop_view": derive_live_desktop_view(record),
             "bridge_status": record.bridge_status,
             "readiness_state": record.readiness_state,
             "bridge_error": record.bridge_error,
@@ -1587,9 +1677,11 @@ async fn next_display(state: &AppState) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        QemuContainerSpec, QemuLaunchMode, docker_run_args, merge_capabilities,
-        parse_published_port, resolve_qemu_endpoint, should_retry_qemu_without_published_ports,
+        QemuContainerSpec, QemuLaunchMode, SessionRecord, derive_live_desktop_view,
+        docker_run_args, enrich_session_record, merge_capabilities, parse_published_port,
+        resolve_qemu_endpoint, should_retry_qemu_without_published_ports,
     };
+    use chrono::Utc;
     use std::path::Path;
 
     #[test]
@@ -1670,5 +1762,82 @@ mod tests {
             args.iter()
                 .any(|arg| arg.contains("/tmp/shared:/shared/hostshare:ro"))
         );
+    }
+
+    #[test]
+    fn derives_truthful_live_desktop_view_modes() {
+        let qemu_product = SessionRecord {
+            id: "qemu-product".to_string(),
+            provider: "qemu".to_string(),
+            qemu_profile: Some("product".to_string()),
+            display: None,
+            width: 1440,
+            height: 900,
+            state: "running".to_string(),
+            created_at: Utc::now(),
+            artifacts_dir: "artifacts/runtime/qemu-product".to_string(),
+            capabilities: vec!["viewer".to_string()],
+            browser_command: Some("firefox".to_string()),
+            runtime_base_url: None,
+            viewer_url: Some("http://127.0.0.1:32771".to_string()),
+            live_desktop_view: None,
+            bridge_status: Some("runtime_ready".to_string()),
+            readiness_state: Some("runtime_ready".to_string()),
+            bridge_error: None,
+        };
+        let qemu_regression = SessionRecord {
+            qemu_profile: Some("regression".to_string()),
+            ..qemu_product.clone()
+        };
+        let xvfb = SessionRecord {
+            id: "xvfb".to_string(),
+            provider: "xvfb".to_string(),
+            qemu_profile: None,
+            display: Some(":90".to_string()),
+            viewer_url: None,
+            ..qemu_product.clone()
+        };
+
+        let qemu_product_view = derive_live_desktop_view(&qemu_product);
+        assert_eq!(qemu_product_view.mode, "stream");
+        assert_eq!(qemu_product_view.provider_surface, "qemu_novnc");
+        assert!(qemu_product_view.matches_action_plane);
+
+        let qemu_regression_view = derive_live_desktop_view(&qemu_regression);
+        assert_eq!(qemu_regression_view.mode, "screenshot_poll");
+        assert_eq!(qemu_regression_view.provider_surface, "guest_xvfb_screenshot");
+        assert!(qemu_regression_view.debug_url.is_some());
+
+        let xvfb_view = derive_live_desktop_view(&xvfb);
+        assert_eq!(xvfb_view.mode, "screenshot_poll");
+        assert_eq!(xvfb_view.status, "ready");
+        assert!(xvfb_view.reason.is_some());
+    }
+
+    #[test]
+    fn enriches_session_record_with_live_desktop_view() {
+        let record = SessionRecord {
+            id: "qemu-product".to_string(),
+            provider: "qemu".to_string(),
+            qemu_profile: Some("product".to_string()),
+            display: None,
+            width: 1440,
+            height: 900,
+            state: "running".to_string(),
+            created_at: Utc::now(),
+            artifacts_dir: "artifacts/runtime/qemu-product".to_string(),
+            capabilities: vec!["viewer".to_string()],
+            browser_command: Some("firefox".to_string()),
+            runtime_base_url: None,
+            viewer_url: Some("http://127.0.0.1:32771".to_string()),
+            live_desktop_view: None,
+            bridge_status: Some("runtime_ready".to_string()),
+            readiness_state: Some("runtime_ready".to_string()),
+            bridge_error: None,
+        };
+
+        let enriched = enrich_session_record(&record);
+        assert!(enriched.live_desktop_view.is_some());
+        assert_eq!(record.live_desktop_view, None);
     }
 }

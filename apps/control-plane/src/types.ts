@@ -39,6 +39,17 @@ export interface RuntimeCapabilities {
   enrichments: string[];
 }
 
+export interface LiveDesktopView {
+  mode: 'stream' | 'screenshot_poll' | 'unavailable';
+  status: 'ready' | 'degraded' | 'stale' | 'unavailable';
+  provider_surface: string;
+  matches_action_plane: boolean;
+  canonical_url?: string | null;
+  debug_url?: string | null;
+  reason?: string | null;
+  refresh_interval_ms?: number | null;
+}
+
 export interface SessionRecord {
   id: string;
   provider: string;
@@ -53,6 +64,7 @@ export interface SessionRecord {
   browser_command?: string | null;
   runtime_base_url?: string | null;
   viewer_url?: string | null;
+  live_desktop_view?: LiveDesktopView | null;
   bridge_status?: string | null;
   readiness_state?: string | null;
   bridge_error?: unknown;

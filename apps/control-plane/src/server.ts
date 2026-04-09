@@ -2,13 +2,15 @@ import { createServer, IncomingMessage, Server, ServerResponse } from 'node:http
 import { mkdir, stat } from 'node:fs/promises';
 import { createReadStream, existsSync } from 'node:fs';
 import { execFile } from 'node:child_process';
+import { Socket, connect as connectSocket } from 'node:net';
 import { dirname, extname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { Duplex } from 'node:stream';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { chromium, firefox, type BrowserContext, type Page } from 'playwright-core';
-import type { ActionReceipt, ActionRequest, JsonObject, RuntimeCapabilities, SessionRecord, TaskRecord } from './types.js';
+import type { ActionReceipt, ActionRequest, JsonObject, LiveDesktopView, RuntimeCapabilities, SessionRecord, TaskRecord } from './types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '../../..');
@@ -21,6 +23,7 @@ const remoteCdpUrl = process.env.ACU_REMOTE_CDP_URL ?? 'http://127.0.0.1:9222';
 const browserBackendPreference = process.env.ACU_BROWSER_BACKEND ?? 'remote-cdp';
 const browserDockerImage = process.env.ACU_BROWSER_DOCKER_IMAGE ?? 'chromedp/headless-shell';
 const browserDockerName = process.env.ACU_BROWSER_DOCKER_NAME ?? 'acu-browser-cdp';
+const screenshotPollIntervalMs = 3000;
 
 type TaskStatus = TaskRecord['status'];
 
@@ -43,6 +46,101 @@ interface ControlPlaneState {
   actionHistory: Map<string, JsonObject[]>;
   browserStates: Map<string, BrowserState>;
   browserSnapshots: Map<string, BrowserSnapshotCache>;
+}
+
+function buildScreenshotPath(sessionId: string): string {
+  return `/api/sessions/${sessionId}/screenshot`;
+}
+
+function buildLiveViewPath(sessionId: string): string {
+  return `/api/sessions/${sessionId}/live-view/`;
+}
+
+function deriveLiveDesktopView(session: SessionRecord): LiveDesktopView {
+  if (session.live_desktop_view) {
+    return {
+      ...session.live_desktop_view,
+      debug_url: session.live_desktop_view.debug_url ?? session.viewer_url ?? null,
+    };
+  }
+
+  if (session.provider === 'qemu') {
+    if (session.qemu_profile === 'regression') {
+      return {
+        mode: 'screenshot_poll',
+        status: session.bridge_status === 'runtime_ready' ? 'ready' : 'unavailable',
+        provider_surface: 'guest_xvfb_screenshot',
+        matches_action_plane: true,
+        canonical_url: null,
+        debug_url: session.viewer_url ?? null,
+        reason: 'qemu regression keeps the VM viewer as debug-only because the action plane runs inside guest xvfb',
+        refresh_interval_ms: screenshotPollIntervalMs,
+      };
+    }
+    return {
+      mode: 'stream',
+      status: session.viewer_url ? 'ready' : 'unavailable',
+      provider_surface: 'qemu_novnc',
+      matches_action_plane: true,
+      canonical_url: null,
+      debug_url: session.viewer_url ?? null,
+      reason: null,
+      refresh_interval_ms: null,
+    };
+  }
+
+  if (session.provider === 'xvfb') {
+    return {
+      mode: 'screenshot_poll',
+      status: 'ready',
+      provider_surface: 'guest_xvfb_screenshot',
+      matches_action_plane: true,
+      canonical_url: null,
+      debug_url: null,
+      reason: 'xvfb is an honest local/dev screenshot fallback without a live desktop stream',
+      refresh_interval_ms: screenshotPollIntervalMs,
+    };
+  }
+
+  return {
+    mode: 'unavailable',
+    status: 'unavailable',
+    provider_surface: 'none',
+    matches_action_plane: false,
+    canonical_url: null,
+    debug_url: session.viewer_url ?? null,
+    reason: 'live desktop view is unavailable for this session',
+    refresh_interval_ms: null,
+  };
+}
+
+function withLiveDesktopView(session: SessionRecord): SessionRecord {
+  const liveDesktopView = deriveLiveDesktopView(session);
+  if (liveDesktopView.mode === 'stream') {
+    liveDesktopView.canonical_url = buildLiveViewPath(session.id);
+  } else if (liveDesktopView.mode === 'screenshot_poll') {
+    liveDesktopView.canonical_url = buildScreenshotPath(session.id);
+    liveDesktopView.refresh_interval_ms ??= screenshotPollIntervalMs;
+  }
+  return {
+    ...session,
+    live_desktop_view: liveDesktopView,
+  };
+}
+
+function buildLiveViewProxyPath(pathname: string, sessionId: string): string | null {
+  const prefix = `/api/sessions/${sessionId}/live-view`;
+  if (!pathname.startsWith(prefix)) return null;
+  const suffix = pathname.slice(prefix.length);
+  if (!suffix || suffix === '/') return '/';
+  return suffix.startsWith('/') ? suffix : `/${suffix}`;
+}
+
+function writeUpgradeError(socket: Duplex, status: number, message: string): void {
+  socket.write(
+    `HTTP/1.1 ${status} ${message}\r\nConnection: close\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: ${Buffer.byteLength(message)}\r\n\r\n${message}`,
+  );
+  socket.destroy();
 }
 
 export function toGuestAction(action: ActionRequest): JsonObject {
@@ -458,6 +556,9 @@ export function createRequestHandler(state: ControlPlaneState) {
           method: 'POST',
           body: JSON.stringify(body),
         });
+        if (upstream.status === 201 && upstream.payload?.session) {
+          upstream.payload.session = withLiveDesktopView(upstream.payload.session as SessionRecord);
+        }
         json(res, upstream.status, upstream.payload);
         return;
       }
@@ -466,7 +567,11 @@ export function createRequestHandler(state: ControlPlaneState) {
       if (sessionMatch && req.method === 'GET') {
         const upstream = await guestRequest(state, `/api/sessions/${sessionMatch[1]}`);
         if (upstream.status === 200) {
-          json(res, 200, { ...upstream.payload, browser_adapter: state.browserStates.has(sessionMatch[1]) });
+          json(res, 200, {
+            ...upstream.payload,
+            session: withLiveDesktopView((upstream.payload as { session: SessionRecord }).session),
+            browser_adapter: state.browserStates.has(sessionMatch[1]),
+          });
         } else {
           json(res, upstream.status, upstream.payload);
         }
@@ -489,12 +594,69 @@ export function createRequestHandler(state: ControlPlaneState) {
         return;
       }
 
+      const liveViewMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/live-view(?:\/.*)?$/);
+      if (liveViewMatch && ['GET', 'HEAD'].includes(req.method ?? 'GET')) {
+        const sessionId = liveViewMatch[1];
+        if (url.pathname === `/api/sessions/${sessionId}/live-view`) {
+          res.statusCode = 307;
+          res.setHeader('location', buildLiveViewPath(sessionId));
+          res.end();
+          return;
+        }
+
+        let session: SessionRecord;
+        try {
+          session = withLiveDesktopView(await getGuestSession(state, sessionId));
+        } catch {
+          json(res, 404, { error: 'session not found' });
+          return;
+        }
+        const liveDesktopView = session.live_desktop_view;
+        if (!liveDesktopView || liveDesktopView.mode !== 'stream' || !liveDesktopView.debug_url) {
+          json(res, 409, {
+            error: {
+              code: 'live_desktop_view_unavailable',
+              message: 'session does not expose a canonical live desktop stream',
+              session_id: sessionId,
+              live_desktop_view: liveDesktopView ?? null,
+            },
+          });
+          return;
+        }
+
+        const upstreamBase = new URL(liveDesktopView.debug_url);
+        const proxyPath = buildLiveViewProxyPath(url.pathname, sessionId) ?? '/';
+        const upstreamUrl = new URL(`${proxyPath}${url.search}`, upstreamBase);
+        const headers = new Headers();
+        for (const [key, value] of Object.entries(req.headers)) {
+          if (key.toLowerCase() === 'host' || value === undefined) continue;
+          if (Array.isArray(value)) {
+            for (const entry of value) headers.append(key, entry);
+          } else {
+            headers.set(key, value);
+          }
+        }
+        headers.set('host', upstreamBase.host);
+        const upstream = await fetch(upstreamUrl, {
+          method: req.method,
+          headers,
+        });
+        res.statusCode = upstream.status;
+        upstream.headers.forEach((value, key) => res.setHeader(key, value));
+        if (req.method === 'HEAD') {
+          res.end();
+          return;
+        }
+        res.end(Buffer.from(await upstream.arrayBuffer()));
+        return;
+      }
+
       const observationMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/observation$/);
       if (observationMatch && req.method === 'GET') {
         const sessionId = observationMatch[1];
         const upstream = await guestRequest(state, `/api/sessions/${sessionId}/observation`);
         if (upstream.status === 200) {
-          upstream.payload.screenshot_url = `/api/sessions/${sessionId}/screenshot?ts=${Date.now()}`;
+          upstream.payload.screenshot_url = `${buildScreenshotPath(sessionId)}?ts=${Date.now()}`;
           upstream.payload.action_history = state.actionHistory.get(sessionId) ?? [];
         }
         json(res, upstream.status, upstream.payload);
@@ -601,6 +763,67 @@ export function createRequestHandler(state: ControlPlaneState) {
   };
 }
 
+async function handleLiveViewUpgrade(
+  state: ControlPlaneState,
+  req: IncomingMessage,
+  socket: Duplex,
+  head: Buffer,
+): Promise<void> {
+  const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+  const match = url.pathname.match(/^\/api\/sessions\/([^/]+)\/live-view(?:\/.*)?$/);
+  if (!match) {
+    writeUpgradeError(socket, 404, 'not found');
+    return;
+  }
+
+  const sessionId = match[1];
+  let session: SessionRecord;
+  try {
+    session = withLiveDesktopView(await getGuestSession(state, sessionId));
+  } catch {
+    writeUpgradeError(socket, 404, 'session not found');
+    return;
+  }
+
+  const liveDesktopView = session.live_desktop_view;
+  if (!liveDesktopView || liveDesktopView.mode !== 'stream' || !liveDesktopView.debug_url) {
+    writeUpgradeError(socket, 409, 'live desktop view unavailable');
+    return;
+  }
+
+  const upstreamBase = new URL(liveDesktopView.debug_url);
+  const proxyPath = buildLiveViewProxyPath(url.pathname, sessionId) ?? '/';
+  const upstreamSocket = connectSocket(
+    Number(upstreamBase.port || (upstreamBase.protocol === 'https:' ? 443 : 80)),
+    upstreamBase.hostname,
+  );
+
+  upstreamSocket.once('connect', () => {
+    const requestLines = [
+      `${req.method ?? 'GET'} ${proxyPath}${url.search} HTTP/1.1`,
+      `Host: ${upstreamBase.host}`,
+    ];
+    for (const [key, value] of Object.entries(req.headers)) {
+      if (key.toLowerCase() === 'host' || value === undefined) continue;
+      if (Array.isArray(value)) {
+        for (const entry of value) requestLines.push(`${key}: ${entry}`);
+      } else {
+        requestLines.push(`${key}: ${value}`);
+      }
+    }
+    requestLines.push('', '');
+    upstreamSocket.write(requestLines.join('\r\n'));
+    if (head.length > 0) upstreamSocket.write(head);
+    socket.pipe(upstreamSocket);
+    upstreamSocket.pipe(socket);
+  });
+
+  upstreamSocket.on('error', () => {
+    if (!socket.destroyed) writeUpgradeError(socket, 502, 'failed to reach live desktop upstream');
+  });
+  socket.on('error', () => upstreamSocket.destroy());
+}
+
 export async function startControlPlaneServer(port = Number(process.env.PORT ?? 3000), guestRuntimeUrl = defaultGuestRuntimeUrl): Promise<{ server: Server; state: ControlPlaneState }> {
   await mkdir(artifactRoot, { recursive: true });
   const state: ControlPlaneState = {
@@ -612,6 +835,9 @@ export async function startControlPlaneServer(port = Number(process.env.PORT ?? 
   };
   const handler = createRequestHandler(state);
   const server = createServer((req, res) => void handler(req, res));
+  server.on('upgrade', (req, socket, head) => {
+    void handleLiveViewUpgrade(state, req, socket, head);
+  });
   await new Promise<void>((resolvePromise) => server.listen(port, resolvePromise));
   return { server, state };
 }

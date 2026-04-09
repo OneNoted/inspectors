@@ -352,9 +352,22 @@ pub struct SessionRecord {
     pub browser_command: Option<String>,
     pub runtime_base_url: Option<String>,
     pub viewer_url: Option<String>,
+    pub live_desktop_view: Option<LiveDesktopView>,
     pub bridge_status: Option<String>,
     pub readiness_state: Option<String>,
     pub bridge_error: Option<StructuredError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct LiveDesktopView {
+    pub mode: String,
+    pub status: String,
+    pub provider_surface: String,
+    pub matches_action_plane: bool,
+    pub canonical_url: Option<String>,
+    pub debug_url: Option<String>,
+    pub reason: Option<String>,
+    pub refresh_interval_ms: Option<u64>,
 }
 
 fn default_provider() -> String {

@@ -112,6 +112,12 @@ async fn qemu_sessions_report_viewer_only_until_the_bridge_is_ready() {
     assert_eq!(session["bridge_status"], "viewer_only");
     assert_eq!(session["readiness_state"], "booting");
     assert!(session["viewer_url"].as_str().is_some());
+    assert_eq!(session["live_desktop_view"]["mode"], "stream");
+    assert_eq!(session["live_desktop_view"]["provider_surface"], "qemu_novnc");
+    assert_eq!(
+        session["live_desktop_view"]["matches_action_plane"],
+        Value::Bool(true)
+    );
 
     let session_id = session["id"].as_str().expect("session id");
     let (actions_status, actions_payload) =
