@@ -65,6 +65,18 @@ else:
         f"timed out waiting for Taskers product guest runtime_ready: {latest_session}"
     )
 
+live_view = latest_session.get("live_desktop_view") or {}
+if live_view.get("mode") != "stream":
+    raise SystemExit(f"Taskers product guest must advertise stream live_desktop_view, got: {live_view}")
+canonical_live_view = live_view.get("canonical_url")
+if not canonical_live_view:
+    raise SystemExit(f"Taskers product guest is missing canonical live view URL: {live_view}")
+with urllib.request.urlopen(f"{BASE_URL}{canonical_live_view}") as response:
+    live_view_probe = {
+        "status": response.status,
+        "content_type": response.headers.get("content-type"),
+    }
+
 task = client.create_task(
     session_id,
     "Launch Taskers, click a visible desktop button, create Workspace 2, and capture proof artifacts",
@@ -137,6 +149,8 @@ if after_count <= before_count or "Workspace 2" not in labels:
 result = {
     "task_id": "taskers-qemu-dogfood",
     "session": latest_session,
+    "live_desktop_view": live_view,
+    "live_view_probe": live_view_probe,
     "task": task,
     "setup_receipt": setup_receipt,
     "click_receipt": click_receipt,
@@ -157,7 +171,7 @@ result = {
 }
 Path("artifacts/taskers-qemu-dogfood.json").write_text(json.dumps(result, indent=2))
 try:
-    client.complete(task_id)
+    client._request(f"/api/tasks/{task_id}/complete", "POST", {})
 except Exception:
     pass
 try:

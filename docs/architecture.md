@@ -15,7 +15,7 @@
 - **Verified regression baseline:** Xvfb-backed session provider.
 - **Current supported product guest:** Ubuntu 24.04 + GNOME.
 - **Current internal regression fixture:** lighter QEMU image using the same guest-runtime protocol.
-- **Operator/debug path:** retain `viewer_url` and surface it in the oversight UI.
+- **Operator/debug path:** expose a canonical `live_desktop_view` route for product oversight, while retaining raw `viewer_url` for debugging.
 - Each session gets its own artifact directory.
 
 ## Observation strategy
@@ -23,7 +23,7 @@
 - Optional X11 metadata (active window and cursor position) when tools are available.
 - Clear split between `raw` machine observations and `summary` fields intended for models/operators.
 - QEMU sessions stay honest: pre-ready sessions return structured bridge-unavailable errors instead of synthetic screenshots.
-- The oversight UI prefers the live viewer when `viewer_url` is available and falls back to screenshots otherwise.
+- The oversight UI renders from `live_desktop_view` metadata so it can distinguish real live desktop, screenshot fallback, and unavailable states without guessing from `viewer_url`.
 
 ## Action strategy
 - Rust guest-runtime handles desktop input, shell/filesystem, app launch, and screenshot capture.

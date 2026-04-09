@@ -11,6 +11,7 @@
 The control plane stays single-path:
 - shell/filesystem/desktop actions go through `guest-runtime`
 - the viewer/live UI is for oversight only
+- `qemu` `product` uses a canonical control-plane live desktop route, while `xvfb` stays screenshot-only in this phase
 
 ## Display stack
 The current environment ships with `Xvfb`, `xdotool`, `xprop`, `xrandr`, `import`, Firefox, and Docker. That is sufficient for:
@@ -42,6 +43,10 @@ The product guest uses a prepared Ubuntu GNOME image. The regression fixture may
 - regression bridge proof:
   ```bash
   ACU_BASE_URL=http://127.0.0.1:3000 python scripts/run-qemu-acceptance.py
+  ```
+- live desktop proof:
+  ```bash
+  ACU_BASE_URL=http://127.0.0.1:3000 python scripts/run-qemu-live-view-demo.py
   ```
 - Taskers dogfood proof:
   ```bash

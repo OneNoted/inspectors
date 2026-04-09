@@ -4,6 +4,7 @@
   "description": "Rerun the existing Xvfb smoke flow after QEMU changes to prove the baseline still works.",
   "success": [
     "session creation succeeds",
+    "session advertises live_desktop_view.mode=screenshot_poll",
     "observation returns screenshot metadata",
     "browser_open returns an ok receipt",
     "artifact path is captured"

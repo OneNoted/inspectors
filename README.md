@@ -9,7 +9,7 @@ A production-minded, vendor-neutral computer-use platform for AI agents. This re
 - A standalone `sandbox-runner` wrapper that starts the runtime stack for local development.
 - TypeScript and Python SDKs plus runnable examples.
 - Docs, eval task scaffolds, sandbox notes, and CI basics.
-- **Container-backed QEMU sessions** with explicit bridge lifecycle reporting (`viewer_only`, `bridge_waiting`, `runtime_ready`, `failed`) and retained `viewer_url` access for operator debugging.
+- **Container-backed QEMU sessions** with explicit bridge lifecycle reporting (`viewer_only`, `bridge_waiting`, `runtime_ready`, `failed`), canonical `live_desktop_view` metadata, and retained raw `viewer_url` access for operator debugging.
 - **Deterministic guest bootstrap + forwarded TCP/HTTP bridge reachability** for this phase's QEMU runtime contract.
 - **Browser trust-boundary routing** that prefers the in-guest path for bridged QEMU sessions while keeping remote CDP as an explicit development fallback when `ACU_ENABLE_PLAYWRIGHT=1`.
 
@@ -17,7 +17,7 @@ A production-minded, vendor-neutral computer-use platform for AI agents. This re
 - **Production target:** QEMU/KVM Linux VM with an in-guest runtime
 - **Current verified regression baseline:** Xvfb-backed session
 - **Phase bridge transport:** forwarded TCP/HTTP guest-runtime bridge (explicitly not the final transport)
-- **Viewer/debug access:** QEMU sessions retain `viewer_url` even after the bridge is ready
+- **Viewer/debug access:** QEMU product sessions expose a control-plane-owned live desktop route, while raw `viewer_url` remains available for debugging
 - **Runtime core:** Rust
 - **Control plane:** TypeScript
 - **Browser specialization:** in-guest for bridged QEMU when available; otherwise explicit fallback with inspectable metadata
@@ -53,10 +53,12 @@ A production-minded, vendor-neutral computer-use platform for AI agents. This re
 
 ## QEMU session behavior
 - `provider: "qemu"` provisions a Docker-managed `qemux/qemu` VM session.
-- The session record returns a `viewer_url`, `bridge_status`, and runtime metadata once the guest bridge is reachable.
+- The session record returns `live_desktop_view`, `viewer_url`, `bridge_status`, and runtime metadata once the guest bridge is reachable.
 - `viewer_only` and `bridge_waiting` are honest pre-ready states: direct observation/action APIs continue to return structured `provider_bridge_unavailable` errors until runtime health passes.
 - `runtime_ready` enables observation, screenshot, shell/filesystem, and desktop actions through the guest runtime bridge.
 - `failed` requires artifact-backed bootstrap or health-check diagnostics.
+- `qemu` `product` sessions use `/api/sessions/:id/live-view/` as the canonical operator stream.
+- `qemu` `regression` and `xvfb` sessions remain honest screenshot-fallback paths unless a real stream exists.
 - `viewer_url` remains available for debugging and recovery, not as the primary control path.
 
 ## Implemented now

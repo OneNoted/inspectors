@@ -5,12 +5,14 @@
   "success": [
     "session reaches bridge_status=runtime_ready",
     "session reaches readiness_state=runtime_ready",
+    "session advertises live_desktop_view.mode=stream for the product profile",
     "viewer_url remains present for debugging",
     "runtime_base_url or equivalent runtime reachability evidence is recorded",
     "guest bootstrap logs and bridge health timestamps are retained"
   ],
   "artifacts": [
     "session record snapshots",
+    "live_desktop_view snapshot",
     "guest bootstrap log",
     "bridge health timestamps",
     "viewer/debug reference"

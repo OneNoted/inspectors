@@ -38,6 +38,7 @@ Optional QEMU fields:
 Return session metadata and whether the browser adapter is attached.
 
 QEMU sessions may include:
+- `live_desktop_view`
 - `viewer_url`
 - `runtime_base_url`
 - `bridge_status`
@@ -51,7 +52,22 @@ Stop the session and clean up child processes/containers.
 Return the latest desktop observation, including `summary`, `raw`, screenshot metadata, and action history.
 
 ### `GET /api/sessions/:id/screenshot`
-Return the latest screenshot as `image/png` for bridged sessions.
+Return the latest screenshot as `image/png` for screenshot-capable sessions, including `xvfb` and `qemu` fallback/action planes.
+
+### `GET /api/sessions/:id/live-view/`
+Return the canonical live desktop stream for `qemu` `product` sessions, including proxied noVNC assets and websocket upgrades.
+
+Non-stream sessions return a structured `live_desktop_view_unavailable` error instead of pretending they have a live desktop stream.
+
+### `live_desktop_view`
+Session metadata now includes:
+- `mode`: `stream`, `screenshot_poll`, or `unavailable`
+- `status`: `ready`, `degraded`, `stale`, or `unavailable`
+- `canonical_url`: control-plane path the UI should render
+- `debug_url`: optional raw provider/debug URL
+- `matches_action_plane`: whether the human view matches the active action plane
+- `reason`: explanatory fallback/unavailability text
+- `refresh_interval_ms`: screenshot polling cadence when relevant
 
 ### `GET /api/sessions/:id/actions`
 Return runtime capabilities plus browser-adapter availability details.

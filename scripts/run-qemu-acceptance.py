@@ -44,6 +44,20 @@ while time.time() - started < TIMEOUT_S:
 else:
     raise SystemExit(f"timed out waiting for runtime_ready: {latest_session}")
 
+live_view = latest_session.get("live_desktop_view") or {}
+expected_mode = "stream" if PROFILE == "product" else "screenshot_poll"
+if live_view.get("mode") != expected_mode:
+    raise SystemExit(f"unexpected live_desktop_view for profile={PROFILE}: {live_view}")
+canonical_url = live_view.get("canonical_url")
+if canonical_url:
+    with urllib.request.urlopen(f"{BASE_URL}{canonical_url}") as response:
+        live_view_probe = {
+            "status": response.status,
+            "content_type": response.headers.get("content-type"),
+        }
+else:
+    live_view_probe = {"status": None, "content_type": None}
+
 install_command = "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y jq && jq --version > /tmp/acu-jq-version.txt"
 install_receipt = client.perform_action(session_id, {"kind": "run_command", "command": install_command})
 read_receipt = client.perform_action(session_id, {"kind": "read_file", "path": "/tmp/acu-jq-version.txt"})
@@ -57,6 +71,8 @@ result = {
     "task_id": "qemu-acceptance",
     "profile": PROFILE,
     "session": latest_session,
+    "live_desktop_view": live_view,
+    "live_view_probe": live_view_probe,
     "install_receipt": install_receipt,
     "read_receipt": read_receipt,
     "observation": observation,

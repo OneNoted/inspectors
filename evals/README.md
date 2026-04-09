@@ -13,6 +13,7 @@ Treat this as the regression guard. QEMU progress is not complete if the Xvfb ba
 ## Phase-specific scenarios
 - `tasks/qemu-bridge-bootstrap.json` — session lifecycle + readiness proof
 - `tasks/qemu-action-bridge.json` — shell/filesystem + desktop parity proof
+- `tasks/qemu-live-view-demo.json` — visible live-desktop oversight proof
 - `tasks/qemu-browser-trust-boundary.json` — in-guest browser routing proof
 - `tasks/qemu-acceptance-regression.json` — lighter QEMU guardrail (`jq --version` + file readback)
 - `tasks/taskers-qemu-dogfood.json` — Ubuntu GNOME + Taskers product proof
@@ -23,6 +24,7 @@ Treat this as the regression guard. QEMU progress is not complete if the Xvfb ba
 - bridge health timestamps
 - action receipts / structured errors
 - screenshot artifacts when available
+- canonical live-view metadata snapshots and route probes
 - guest bootstrap logs
 - viewer/debug references
 - failure classification if the bridge does not become ready

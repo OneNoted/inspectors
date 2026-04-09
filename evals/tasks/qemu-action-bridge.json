@@ -6,12 +6,14 @@
     "observation succeeds after runtime_ready",
     "screenshot retrieval succeeds after runtime_ready",
     "at least one shell/filesystem action succeeds",
-    "at least one desktop interaction action succeeds"
+    "at least one desktop interaction action succeeds",
+    "visible pointer movement or typing evidence is retained alongside action receipts"
   ],
   "artifacts": [
     "observation payload",
     "screenshot artifact",
     "action receipts",
-    "capability snapshot"
+    "capability snapshot",
+    "live_desktop_view snapshot"
   ]
 }

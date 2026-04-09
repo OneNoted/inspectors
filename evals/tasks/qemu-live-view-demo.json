@@ -1,0 +1,16 @@
+{
+  "id": "qemu-live-view-demo",
+  "provider": "qemu",
+  "profile": "product",
+  "description": "Boot the Ubuntu GNOME product guest, verify the canonical live desktop route is reachable, launch xmessage, move the mouse, click visibly, type visible text, and retain proof artifacts.",
+  "success": [
+    "session reaches readiness_state=runtime_ready",
+    "session advertises live_desktop_view.mode=stream",
+    "canonical live desktop route is reachable",
+    "visible pointer movement, click, and typing proof are retained",
+    "before and after screenshots differ"
+  ],
+  "artifacts": [
+    "artifacts/qemu-live-view-demo.json"
+  ]
+}

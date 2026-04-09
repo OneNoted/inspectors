@@ -5,7 +5,7 @@
 - The preferred trust boundary is a disposable Linux VM.
 - Xvfb remains the most reliable local regression baseline in the current environment.
 - Bridged QEMU sessions should keep desktop, shell/filesystem, and browser work inside the VM boundary whenever the guest bridge is `runtime_ready`.
-- `viewer_url` is an operator/debug path, not the primary control path.
+- `live_desktop_view` is the canonical operator-facing oversight contract; raw `viewer_url` remains a debug path, not the primary control path.
 
 ## Policy categories
 - Desktop input

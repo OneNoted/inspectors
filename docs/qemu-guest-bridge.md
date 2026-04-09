@@ -36,12 +36,17 @@ Practical pieces:
 
 ## Oversight UI contract
 
-The live viewer is for:
+The canonical `live_desktop_view` contract is for:
 - operator visibility
 - session/task/action context
 - pause/resume/stop
 
-It is **not** the primary control plane for claiming product success.
+Provider truthfulness matters:
+- `qemu` `product` exposes a canonical live stream through the control plane
+- `qemu` `regression` keeps the VM viewer as debug-only because the action plane runs in guest-side `xvfb`
+- `xvfb` is screenshot fallback only in this phase
+
+The live view is **not** the primary control plane for claiming product success.
 
 ## Health contract
 
