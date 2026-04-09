@@ -58,7 +58,7 @@ export function describeLiveDesktopView(session) {
   };
 }
 
-export function buildScreenshotUrl(sessionId, liveView) {
-  if (!sessionId || !liveView?.canonical_url) return null;
+export function buildScreenshotUrl(liveView) {
+  if (!liveView?.canonical_url) return null;
   return `${liveView.canonical_url}?ts=${Date.now()}`;
 }

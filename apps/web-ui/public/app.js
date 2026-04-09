@@ -68,7 +68,7 @@ function updateLiveView(session) {
   }
 
   if (description.showImage && liveView.mode === 'screenshot_poll') {
-    const screenshotUrl = buildScreenshotUrl(session.id, liveView);
+    const screenshotUrl = buildScreenshotUrl(liveView);
     if (screenshotUrl) desktopImage.src = screenshotUrl;
   }
 

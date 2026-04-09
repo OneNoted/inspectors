@@ -53,7 +53,7 @@ test('getLiveDesktopView falls back to unavailable metadata when absent', () => 
 });
 
 test('buildScreenshotUrl appends a cache-busting timestamp', () => {
-  const url = buildScreenshotUrl('xvfb', {
+  const url = buildScreenshotUrl({
     canonical_url: '/api/sessions/xvfb/screenshot',
   });
   assert.match(String(url), /^\/api\/sessions\/xvfb\/screenshot\?ts=\d+$/);
