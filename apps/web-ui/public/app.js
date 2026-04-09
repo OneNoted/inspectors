@@ -1,4 +1,5 @@
 import { buildScreenshotUrl, describeLiveDesktopView, getLiveDesktopView } from './live-view.js';
+import { buildSessionUrl, getSessionIdFromLocation, parseSessionReference } from './session-link.js';
 
 const sessionMeta = document.getElementById('session-meta');
 const desktopImage = document.getElementById('desktop-image');
@@ -16,6 +17,7 @@ const actionPayload = document.getElementById('action-payload');
 const providerSelect = document.getElementById('session-provider');
 const qemuProfileSelect = document.getElementById('qemu-profile');
 const sharedHostPathInput = document.getElementById('shared-host-path');
+const existingSessionInput = document.getElementById('existing-session');
 const qemuOptions = document.getElementById('qemu-options');
 const sessionSummary = document.getElementById('session-summary');
 let sessionId = null;
@@ -24,12 +26,38 @@ let liveViewUrl = null;
 
 async function json(url, options) {
   const res = await fetch(url, { headers: { 'content-type': 'application/json' }, ...options });
-  return res.json();
+  const text = await res.text();
+  const payload = text ? JSON.parse(text) : null;
+  if (!res.ok) {
+    const errorMessage = payload?.error?.message ?? payload?.error ?? `${res.status} ${res.statusText}`;
+    throw new Error(String(errorMessage));
+  }
+  return payload;
 }
 
 function updateProviderOptions() {
   const isQemu = providerSelect.value === 'qemu';
   qemuOptions.hidden = !isQemu;
+}
+
+function syncSessionLocation() {
+  const nextUrl = buildSessionUrl(sessionId);
+  window.history.replaceState({}, '', nextUrl);
+  existingSessionInput.value = sessionId ?? '';
+}
+
+function resetDesktopState(message = 'Live desktop unavailable') {
+  liveViewUrl = null;
+  viewerFrame.hidden = true;
+  viewerFrame.removeAttribute('src');
+  viewerLink.hidden = true;
+  desktopImage.hidden = true;
+  desktopImage.removeAttribute('src');
+  desktopPlaceholder.hidden = false;
+  desktopPlaceholder.textContent = message;
+  desktopPanelTitle.textContent = 'Live desktop view';
+  liveViewBadge.textContent = 'Unavailable';
+  liveViewTrust.textContent = 'No session selected.';
 }
 
 function summarizeSession(session) {
@@ -83,16 +111,26 @@ function updateLiveView(session) {
 
 async function refresh() {
   if (!sessionId) return;
-  const sessionPayload = await json(`/api/sessions/${sessionId}`);
-  const session = sessionPayload.session ?? sessionPayload;
-  const obs = await json(`/api/sessions/${sessionId}/observation`);
-  const dashboard = await json('/api/dashboard');
-  summarizeSession(session);
-  sessionMeta.textContent = JSON.stringify(sessionPayload, null, 2);
-  observation.textContent = JSON.stringify(obs.summary ?? obs, null, 2);
-  historyEl.textContent = JSON.stringify(obs.action_history ?? [], null, 2);
-  tasksEl.textContent = JSON.stringify(dashboard.tasks ?? [], null, 2);
-  updateLiveView(session);
+  try {
+    const sessionPayload = await json(`/api/sessions/${sessionId}`);
+    const session = sessionPayload.session ?? sessionPayload;
+    const obs = await json(`/api/sessions/${sessionId}/observation`);
+    const dashboard = await json('/api/dashboard');
+    summarizeSession(session);
+    sessionMeta.textContent = JSON.stringify(sessionPayload, null, 2);
+    observation.textContent = JSON.stringify(obs.summary ?? obs, null, 2);
+    historyEl.textContent = JSON.stringify(obs.action_history ?? [], null, 2);
+    tasksEl.textContent = JSON.stringify(dashboard.tasks ?? [], null, 2);
+    updateLiveView(session);
+    syncSessionLocation();
+  } catch (error) {
+    sessionSummary.textContent = `session=${sessionId} · unavailable`;
+    sessionMeta.textContent = JSON.stringify({ error: String(error) }, null, 2);
+    observation.textContent = JSON.stringify({ error: 'observation unavailable' }, null, 2);
+    historyEl.textContent = '[]';
+    tasksEl.textContent = '[]';
+    resetDesktopState('Live desktop unavailable for the requested session');
+  }
 }
 
 document.getElementById('create-session').addEventListener('click', async () => {
@@ -114,6 +152,28 @@ document.getElementById('create-session').addEventListener('click', async () => 
 });
 
 document.getElementById('refresh-session').addEventListener('click', refresh);
+document.getElementById('attach-session').addEventListener('click', async () => {
+  const nextSessionId = parseSessionReference(existingSessionInput.value);
+  if (!nextSessionId) {
+    sessionSummary.textContent = 'Enter a session id or live-view URL to attach.';
+    return;
+  }
+  sessionId = nextSessionId;
+  taskId = null;
+  await refresh();
+});
+document.getElementById('clear-session').addEventListener('click', () => {
+  sessionId = null;
+  taskId = null;
+  existingSessionInput.value = '';
+  syncSessionLocation();
+  sessionSummary.textContent = 'No session';
+  sessionMeta.textContent = 'No session';
+  observation.textContent = '';
+  historyEl.textContent = '';
+  tasksEl.textContent = '';
+  resetDesktopState();
+});
 providerSelect.addEventListener('change', updateProviderOptions);
 updateProviderOptions();
 
@@ -146,5 +206,13 @@ desktopImage.addEventListener('error', () => {
 desktopImage.addEventListener('load', () => {
   if (!desktopImage.hidden) desktopPlaceholder.hidden = true;
 });
+
+sessionId = getSessionIdFromLocation();
+if (sessionId) {
+  existingSessionInput.value = sessionId;
+  refresh().catch(() => {});
+} else {
+  resetDesktopState();
+}
 
 setInterval(() => { refresh().catch(() => {}); }, 3000);

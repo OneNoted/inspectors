@@ -31,6 +31,14 @@
             <input id="shared-host-path" type="text" value="../taskers" />
           </label>
         </div>
+        <label>
+          Attach existing session
+          <input id="existing-session" type="text" placeholder="Paste a session id or live-view URL" />
+        </label>
+        <div class="session-actions">
+          <button id="attach-session">Attach session</button>
+          <button id="clear-session" type="button">Clear</button>
+        </div>
         <button id="create-session">Create session</button>
         <button id="refresh-session">Refresh</button>
         <p id="session-summary" class="status-line">No session</p>

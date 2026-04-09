@@ -14,6 +14,7 @@ textarea { min-height: 110px; }
 .subtle { color: #94a3b8; margin-top: 0; }
 label { display: block; font-weight: 600; margin-top: 12px; }
 .task-controls { display: flex; flex-wrap: wrap; margin-top: 8px; }
+.session-actions { display: flex; flex-wrap: wrap; margin-top: 8px; }
 .desktop-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .desktop-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
 .desktop-header a { color: #7dd3fc; }
