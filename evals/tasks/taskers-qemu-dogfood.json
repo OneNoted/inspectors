@@ -1,0 +1,16 @@
+{
+  "id": "taskers-qemu-dogfood",
+  "provider": "qemu",
+  "profile": "product",
+  "description": "Boot the Ubuntu GNOME product guest, launch Taskers from the shared host repo, create a new workspace through a visible GUI interaction, and retain the proof bundle.",
+  "success": [
+    "session reaches readiness_state=runtime_ready",
+    "Taskers launches in the guest",
+    "at least one GUI click is issued through guest-runtime",
+    "Taskers query output changes in a machine-verifiable way",
+    "visual proof and action proof are retained"
+  ],
+  "artifacts": [
+    "artifacts/taskers-qemu-dogfood.json"
+  ]
+}

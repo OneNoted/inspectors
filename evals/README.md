@@ -14,6 +14,8 @@ Treat this as the regression guard. QEMU progress is not complete if the Xvfb ba
 - `tasks/qemu-bridge-bootstrap.json` — session lifecycle + readiness proof
 - `tasks/qemu-action-bridge.json` — shell/filesystem + desktop parity proof
 - `tasks/qemu-browser-trust-boundary.json` — in-guest browser routing proof
+- `tasks/qemu-acceptance-regression.json` — lighter QEMU guardrail (`jq --version` + file readback)
+- `tasks/taskers-qemu-dogfood.json` — Ubuntu GNOME + Taskers product proof
 - `tasks/xvfb-regression-smoke.json` — explicit regression guard record
 
 ## Evidence to retain

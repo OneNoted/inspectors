@@ -97,6 +97,7 @@ async fn qemu_sessions_report_viewer_only_until_the_bridge_is_ready() {
         "/api/sessions",
         Some(&json!({
             "provider": "qemu",
+            "boot": "alpine",
             "width": 1280,
             "height": 720,
         })),
@@ -173,6 +174,7 @@ async fn qemu_boot_failures_include_container_logs() {
         "/api/sessions",
         Some(&json!({
             "provider": "qemu",
+            "boot": "alpine",
         })),
     );
     assert_eq!(status, 424, "unexpected payload: {payload}");

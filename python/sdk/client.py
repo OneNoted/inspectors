@@ -30,6 +30,9 @@ class ComputerUseClient:
         payload = {"provider": provider, "width": width, "height": height, **options}
         return self._request("/api/sessions", "POST", payload)
 
+    def get_session(self, session_id: str) -> Any:
+        return self._request(f"/api/sessions/{session_id}")
+
     def get_observation(self, session_id: str) -> Any:
         return self._request(f"/api/sessions/{session_id}/observation")
 

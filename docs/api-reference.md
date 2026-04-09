@@ -21,15 +21,28 @@ QEMU request example:
 ```json
 {
   "provider": "qemu",
-  "boot": "alpine",
-  "disable_kvm": true,
+  "qemu_profile": "product",
+  "shared_host_path": "../taskers",
   "width": 1280,
   "height": 720
 }
 ```
 
+Optional QEMU fields:
+- `qemu_profile`: `product` or `regression`
+- `shared_host_path`: host path mounted into the guest via `/shared/hostshare`
+- `boot`: optional explicit boot override for low-level/debug sessions
+- `container_image`: optional explicit `qemux/qemu` image override
+
 ### `GET /api/sessions/:id`
-Return session metadata and whether the browser adapter is attached. QEMU sessions may include `viewer_url`, `runtime_base_url`, and `bridge_status`.
+Return session metadata and whether the browser adapter is attached.
+
+QEMU sessions may include:
+- `viewer_url`
+- `runtime_base_url`
+- `bridge_status`
+- `readiness_state`
+- `qemu_profile`
 
 ### `DELETE /api/sessions/:id`
 Stop the session and clean up child processes/containers.
@@ -37,17 +50,11 @@ Stop the session and clean up child processes/containers.
 ### `GET /api/sessions/:id/observation`
 Return the latest desktop observation, including `summary`, `raw`, screenshot metadata, and action history.
 
-- QEMU sessions in `viewer_only` or `bridge_waiting` return a structured bridge-unavailable error.
-- QEMU sessions in `runtime_ready` should behave like bridged Xvfb sessions for the supported observation contract.
-
 ### `GET /api/sessions/:id/screenshot`
 Return the latest screenshot as `image/png` for bridged sessions.
 
 ### `GET /api/sessions/:id/actions`
 Return runtime capabilities plus browser-adapter availability details.
-
-- QEMU sessions in `viewer_only` or `bridge_waiting` return zero direct actions.
-- QEMU sessions in `runtime_ready` should expose the same phase-target action families as Xvfb (observation/screenshot, shell/filesystem, desktop, plus inspectable browser routing metadata).
 
 ### `POST /api/sessions/:id/actions`
 Run one action. Returns an `ActionReceipt` or a structured error.
@@ -71,55 +78,31 @@ Return runtime health and current session count.
 
 ### `POST /api/sessions`
 Create a guest session. Supported providers:
-- `xvfb`: fully bridged local desktop sandbox
-- `qemu`: Docker-managed VM session with `viewer_url`, explicit `bridge_status`, and `runtime_base_url` once the guest bridge is reachable
+- `xvfb`
+- `display`
+- `qemu`
 
-### `GET /api/sessions/:id`
-Return the underlying session record.
+For QEMU, the host-side provider eventually attaches a remote runtime session using either:
+- `display` for the full-desktop product guest
+- `xvfb` for the lighter regression fixture
 
-### `DELETE /api/sessions/:id`
-Stop the underlying session provider.
+## QEMU lifecycle fields
 
-### `GET /api/sessions/:id/observation`
-Return the raw Rust observation object for bridged sessions, or a structured bridge-unavailable error while a QEMU session is still `viewer_only` / `bridge_waiting`.
-
-### `GET /api/sessions/:id/screenshot`
-Return a PNG screenshot for bridged sessions.
-
-### `GET /api/sessions/:id/actions`
-Return guest-runtime capabilities. Pre-ready QEMU sessions return zero direct actions.
-
-### `POST /api/sessions/:id/actions`
-Run a guest-runtime action. Browser-specialized actions that require DOM tooling are usually handled by the control plane instead.
-
-## QEMU bridge lifecycle
-`bridge_status` is the provider bridge lifecycle for QEMU sessions:
-- `viewer_only`: VM viewer is reachable, guest bridge readiness has not started yet
+### `bridge_status`
+- `viewer_only`: VM viewer is reachable but there is no actionable bridge yet
 - `bridge_waiting`: bootstrap / health checks are running
 - `runtime_ready`: guest bridge is healthy and direct runtime actions are allowed
-- `failed`: bootstrap or health checks failed; artifact-backed diagnostics should be available
+- `failed`: bootstrap or health checks failed
 
-## Browser adapter metadata
-`GET /api/sessions/:id/actions` may include:
-- `browser_adapter_enabled`
-- `browser_adapter_backend` (`desktop-fallback`, `remote-cdp`, or another inspectable backend chosen by the implementation)
-- `browser_adapter` supported action names
+### `readiness_state`
+- `booting`
+- `desktop_ready`
+- `bridge_listening`
+- `bridge_attached`
+- `runtime_ready`
+- `failed`
 
-For bridged QEMU sessions, the default happy path should not report `remote-cdp` unless the caller explicitly enabled a dev fallback.
-
-## Action receipt shape
-```json
-{
-  "status": "ok",
-  "receipt_id": "uuid",
-  "action_type": "run_command",
-  "started_at": "2026-04-08T16:02:57.259975810Z",
-  "completed_at": "2026-04-08T16:02:57.263049754Z",
-  "result": {},
-  "artifacts": [],
-  "error": null
-}
-```
+`runtime_ready` should only appear after `/health` succeeds and the host has attached a usable remote runtime session.
 
 ## Structured provider bridge error
 ```json
@@ -130,8 +113,10 @@ For bridged QEMU sessions, the default happy path should not report `remote-cdp`
     "category": "provider",
     "details": {
       "provider": "qemu",
+      "qemu_profile": "product",
       "viewer_url": "http://172.17.0.4:8006",
-      "bridge_status": "bridge_waiting"
+      "bridge_status": "bridge_waiting",
+      "readiness_state": "bridge_listening"
     }
   }
 }

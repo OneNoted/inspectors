@@ -10,7 +10,7 @@ use axum::{
     extract::{Path as AxumPath, State},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::get,
 };
 use desktop_core::{
     ActionReceipt, ActionRequest, ArtifactRef, CreateSessionRequest, Observation,
@@ -86,6 +86,11 @@ struct BridgeSessionResponse {
     session: SessionRecord,
 }
 
+#[derive(serde::Deserialize)]
+struct EnsuredQemuImage {
+    image_path: String,
+}
+
 struct QemuBridgeMonitor {
     sessions: Arc<Mutex<HashMap<String, SessionHandle>>>,
     http_client: Client,
@@ -114,6 +119,9 @@ struct QemuContainerSpec<'a> {
     image: &'a str,
     boot: &'a str,
     artifacts_dir: &'a Path,
+    boot_image_path: Option<&'a Path>,
+    seed_iso_path: Option<&'a Path>,
+    shared_host_path: Option<&'a Path>,
     viewer_port: u16,
     runtime_port: u16,
     disable_kvm: bool,
@@ -170,7 +178,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/health", get(health))
-        .route("/api/sessions", post(create_session))
+        .route("/api/sessions", get(list_sessions).post(create_session))
         .route(
             "/api/sessions/{id}",
             get(get_session).delete(delete_session),
@@ -224,6 +232,17 @@ async fn create_session(
         Ok(session) => (StatusCode::CREATED, Json(json!({ "session": session }))).into_response(),
         Err((status, error)) => (status, Json(json!({ "error": error }))).into_response(),
     }
+}
+
+async fn list_sessions(State(state): State<AppState>) -> Response {
+    let sessions = state
+        .sessions
+        .lock()
+        .await
+        .values()
+        .map(|handle| handle.record.clone())
+        .collect::<Vec<_>>();
+    (StatusCode::OK, Json(json!({ "sessions": sessions }))).into_response()
 }
 
 async fn create_session_impl(
@@ -435,11 +454,46 @@ async fn create_qemu_session(
         .clone()
         .or_else(|| std::env::var("ACU_QEMU_CONTAINER_IMAGE").ok())
         .unwrap_or_else(|| "qemux/qemu".to_string());
-    let boot = request
+    let mut boot = request
         .boot
         .clone()
         .or_else(|| std::env::var("ACU_QEMU_BOOT").ok())
         .unwrap_or_else(|| "alpine".to_string());
+    let mut boot_image_path = None;
+    let mut seed_iso_path = None;
+    if request.boot.is_none() {
+        let template_image = ensure_qemu_profile_image(state, qemu_profile).await?;
+        let session_boot_image =
+            absolute_artifacts_dir.join(format!("{}-boot.qcow2", qemu_profile.as_str()));
+        tokio::fs::copy(&template_image, &session_boot_image)
+            .await
+            .map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({ "code": "qemu_image_copy_failed", "message": error.to_string() }),
+                )
+            })?;
+        boot = "/boot.qcow2".to_string();
+        boot_image_path = Some(session_boot_image);
+        seed_iso_path = Some(
+            build_qemu_session_seed_iso(&absolute_artifacts_dir, &session_id, qemu_profile, &image)
+                .await?,
+        );
+    }
+    let shared_host_path = if let Some(shared_host_path) = request.shared_host_path.as_deref() {
+        Some(std::fs::canonicalize(shared_host_path).map_err(|error| {
+            (
+                StatusCode::BAD_REQUEST,
+                json!({
+                    "code": "shared_host_path_invalid",
+                    "message": error.to_string(),
+                    "path": shared_host_path,
+                }),
+            )
+        })?)
+    } else {
+        None
+    };
     let disable_kvm = request
         .disable_kvm
         .unwrap_or_else(|| !Path::new("/dev/kvm").exists());
@@ -449,6 +503,9 @@ async fn create_qemu_session(
         image: &image,
         boot: &boot,
         artifacts_dir: &absolute_artifacts_dir,
+        boot_image_path: boot_image_path.as_deref(),
+        seed_iso_path: seed_iso_path.as_deref(),
+        shared_host_path: shared_host_path.as_deref(),
         viewer_port: state.qemu_viewer_port,
         runtime_port: state.qemu_guest_runtime_port,
         disable_kvm,
@@ -555,6 +612,16 @@ async fn create_qemu_session(
     );
 
     if let Some(remote_runtime_url) = remote_runtime_url {
+        let bridge_timeout = match qemu_profile {
+            QemuSessionProfile::Product => std::cmp::max(
+                state.qemu_bridge_probe_timeout,
+                Duration::from_secs(180),
+            ),
+            QemuSessionProfile::Regression => std::cmp::max(
+                state.qemu_bridge_probe_timeout,
+                Duration::from_secs(90),
+            ),
+        };
         tokio::spawn(monitor_qemu_bridge(QemuBridgeMonitor {
             sessions: state.sessions.clone(),
             http_client: state.http_client.clone(),
@@ -568,7 +635,7 @@ async fn create_qemu_session(
             artifacts_dir,
             remote_runtime_url,
             viewer_url,
-            timeout: state.qemu_bridge_probe_timeout,
+            timeout: bridge_timeout,
             interval: state.qemu_bridge_probe_interval,
         }));
     }
@@ -741,6 +808,154 @@ async fn docker_output(args: &[&str]) -> Result<String, (StatusCode, Value)> {
     }
 }
 
+async fn ensure_qemu_profile_image(
+    state: &AppState,
+    profile: QemuSessionProfile,
+) -> Result<PathBuf, (StatusCode, Value)> {
+    let cache_root = state.artifacts_root.join("_qemu_images");
+    tokio::fs::create_dir_all(&cache_root)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "code": "qemu_cache_dir_failed", "message": error.to_string() }),
+            )
+        })?;
+    let script_path = std::env::var("ACU_QEMU_ASSET_SCRIPT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("..")
+                .join("scripts")
+                .join("qemu_guest_assets.py")
+        });
+    let guest_runtime_binary = std::env::current_exe().map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "code": "guest_runtime_exe_missing", "message": error.to_string() }),
+        )
+    })?;
+    let qemu_container_image = std::env::var("ACU_QEMU_CONTAINER_IMAGE")
+        .unwrap_or_else(|_| "qemux/qemu".to_string());
+    let output = Command::new("python3")
+        .args([
+            script_path.to_string_lossy().as_ref(),
+            "ensure-image",
+            "--profile",
+            profile.as_str(),
+            "--cache-root",
+            cache_root.to_string_lossy().as_ref(),
+            "--guest-runtime-binary",
+            guest_runtime_binary.to_string_lossy().as_ref(),
+            "--qemu-image",
+            &qemu_container_image,
+            "--browser-command",
+            &state.browser_command,
+        ])
+        .output()
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::FAILED_DEPENDENCY,
+                json!({ "code": "qemu_asset_builder_failed", "message": error.to_string() }),
+            )
+        })?;
+    if !output.status.success() {
+        return Err((
+            StatusCode::FAILED_DEPENDENCY,
+            json!({
+                "code": "qemu_asset_builder_failed",
+                "status": output.status.code(),
+                "stderr": String::from_utf8_lossy(&output.stderr),
+            }),
+        ));
+    }
+    let ensured: EnsuredQemuImage =
+        serde_json::from_slice(&output.stdout).map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({
+                    "code": "qemu_asset_builder_decode_failed",
+                    "message": error.to_string(),
+                    "stdout": String::from_utf8_lossy(&output.stdout),
+                }),
+            )
+        })?;
+    Ok(PathBuf::from(ensured.image_path))
+}
+
+async fn build_qemu_session_seed_iso(
+    artifacts_dir: &Path,
+    session_id: &str,
+    profile: QemuSessionProfile,
+    qemu_image: &str,
+) -> Result<PathBuf, (StatusCode, Value)> {
+    let seed_dir = artifacts_dir.join("seed");
+    tokio::fs::create_dir_all(&seed_dir)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "code": "qemu_seed_dir_failed", "message": error.to_string() }),
+            )
+        })?;
+    let user_data = format!(
+        "#cloud-config\nruncmd:\n  - [ bash, -lc, 'systemctl disable --now ufw || true' ]\n  - [ bash, -lc, 'echo {} > /var/lib/acu-session-profile' ]\n",
+        profile.as_str()
+    );
+    let meta_data = format!(
+        "instance-id: acu-session-{session_id}\nlocal-hostname: acu-{}\n",
+        profile.as_str()
+    );
+    tokio::fs::write(seed_dir.join("user-data"), user_data)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "code": "qemu_seed_write_failed", "message": error.to_string() }),
+            )
+        })?;
+    tokio::fs::write(seed_dir.join("meta-data"), meta_data)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "code": "qemu_seed_write_failed", "message": error.to_string() }),
+            )
+        })?;
+    let output = Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "-v",
+            &format!("{}:/work", seed_dir.to_string_lossy()),
+            "--entrypoint",
+            "sh",
+            qemu_image,
+            "-lc",
+            "cd /work && genisoimage -output /work/seed.iso -volid cidata -joliet -rock user-data meta-data >/dev/null 2>&1",
+        ])
+        .output()
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::FAILED_DEPENDENCY,
+                json!({ "code": "qemu_seed_iso_failed", "message": error.to_string() }),
+            )
+        })?;
+    if !output.status.success() {
+        return Err((
+            StatusCode::FAILED_DEPENDENCY,
+            json!({
+                "code": "qemu_seed_iso_failed",
+                "stderr": String::from_utf8_lossy(&output.stderr),
+            }),
+        ));
+    }
+    Ok(seed_dir.join("seed.iso"))
+}
+
 async fn launch_qemu_container(spec: &QemuContainerSpec<'_>) -> Result<QemuLaunchMode, String> {
     let primary = docker_run_qemu_container(spec, QemuLaunchMode::PublishedPorts).await?;
     if primary.status.success() {
@@ -768,6 +983,20 @@ async fn docker_run_qemu_container(
     spec: &QemuContainerSpec<'_>,
     launch_mode: QemuLaunchMode,
 ) -> Result<std::process::Output, String> {
+    let args = docker_run_args(spec, launch_mode);
+    Command::new("docker")
+        .args(&args)
+        .output()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+fn docker_run_args(spec: &QemuContainerSpec<'_>, launch_mode: QemuLaunchMode) -> Vec<String> {
+    let boot_value = if spec.boot_image_path.is_some() {
+        "/boot.qcow2"
+    } else {
+        spec.boot
+    };
     let mut args = vec![
         "run".to_string(),
         "-d".to_string(),
@@ -782,11 +1011,27 @@ async fn docker_run_qemu_container(
         args.push(format!("127.0.0.1::{}", spec.runtime_port));
     }
     args.push("-e".to_string());
-    args.push(format!("BOOT={}", spec.boot));
+    args.push(format!("BOOT={boot_value}"));
     args.push("-e".to_string());
     args.push(format!("USER_PORTS=22,{}", spec.runtime_port));
     args.push("-v".to_string());
     args.push(format!("{}:/storage", spec.artifacts_dir.to_string_lossy()));
+    if let Some(boot_image_path) = spec.boot_image_path {
+        args.push("-v".to_string());
+        args.push(format!("{}:/boot.qcow2", boot_image_path.to_string_lossy()));
+    }
+    if let Some(seed_iso_path) = spec.seed_iso_path {
+        args.push("-v".to_string());
+        args.push(format!("{}:/seed.iso:ro", seed_iso_path.to_string_lossy()));
+        args.push("-e".to_string());
+        args.push(
+            "ARGUMENTS=-drive file=/seed.iso,format=raw,media=cdrom,readonly=on".to_string(),
+        );
+    }
+    if let Some(shared_host_path) = spec.shared_host_path {
+        args.push("-v".to_string());
+        args.push(format!("{}:/shared/hostshare:ro", shared_host_path.to_string_lossy()));
+    }
     if spec.disable_kvm {
         args.push("-e".to_string());
         args.push("KVM=N".to_string());
@@ -801,12 +1046,7 @@ async fn docker_run_qemu_container(
     args.push("--cap-add".to_string());
     args.push("NET_ADMIN".to_string());
     args.push(spec.image.to_string());
-
-    Command::new("docker")
-        .args(&args)
-        .output()
-        .await
-        .map_err(|error| error.to_string())
+    args
 }
 
 async fn docker_mapped_port(
@@ -1349,9 +1589,11 @@ async fn next_display(state: &AppState) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        merge_capabilities, parse_published_port, resolve_qemu_endpoint,
+        QemuContainerSpec, QemuLaunchMode, docker_run_args, merge_capabilities,
+        parse_published_port, resolve_qemu_endpoint,
         should_retry_qemu_without_published_ports,
     };
+    use std::path::Path;
 
     #[test]
     fn parses_published_port_from_docker_output() {
@@ -1398,5 +1640,35 @@ mod tests {
         assert!(!should_retry_qemu_without_published_ports(
             "manifest for qemux/qemu:missing not found"
         ));
+    }
+
+    #[test]
+    fn docker_run_args_include_seed_iso_and_shared_path_mounts() {
+        let spec = QemuContainerSpec {
+            container_name: "acu-test",
+            image: "qemux/qemu",
+            boot: "/boot.qcow2",
+            artifacts_dir: Path::new("/tmp/artifacts"),
+            boot_image_path: Some(Path::new("/tmp/boot.qcow2")),
+            seed_iso_path: Some(Path::new("/tmp/seed.iso")),
+            shared_host_path: Some(Path::new("/tmp/shared")),
+            viewer_port: 8006,
+            runtime_port: 4001,
+            disable_kvm: true,
+        };
+        let args = docker_run_args(&spec, QemuLaunchMode::BridgeNetwork);
+        assert!(args.iter().any(|arg| arg == "BOOT=/boot.qcow2"));
+        assert!(args
+            .iter()
+            .any(|arg| arg.contains("/tmp/boot.qcow2:/boot.qcow2")));
+        assert!(args
+            .iter()
+            .any(|arg| arg.contains("/tmp/seed.iso:/seed.iso:ro")));
+        assert!(args.iter().any(|arg| {
+            arg == "ARGUMENTS=-drive file=/seed.iso,format=raw,media=cdrom,readonly=on"
+        }));
+        assert!(args
+            .iter()
+            .any(|arg| arg.contains("/tmp/shared:/shared/hostshare:ro")));
     }
 }

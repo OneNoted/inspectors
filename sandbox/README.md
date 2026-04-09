@@ -2,7 +2,15 @@
 
 ## Providers
 - `xvfb`: implemented local/dev fallback with full action bridge and regression-baseline status.
-- `qemu`: Docker-managed `qemux/qemu` VM provider with explicit bridge lifecycle (`viewer_only -> bridge_waiting -> runtime_ready | failed`) and retained viewer access for operators.
+- `qemu`: Docker-managed `qemux/qemu` VM provider with explicit bridge lifecycle plus a separate `readiness_state` ladder.
+
+## QEMU profiles
+- **`product`**: supported Ubuntu 24.04 + GNOME happy path for real desktop dogfooding.
+- **`regression`**: lighter internal fixture that preserves the same guest-runtime protocol for package/file regression checks.
+
+The control plane stays single-path:
+- shell/filesystem/desktop actions go through `guest-runtime`
+- the viewer/live UI is for oversight only
 
 ## Display stack
 The current environment ships with `Xvfb`, `xdotool`, `xprop`, `xrandr`, `import`, Firefox, and Docker. That is sufficient for:
@@ -10,17 +18,45 @@ The current environment ships with `Xvfb`, `xdotool`, `xprop`, `xrandr`, `import
 - provisioning a real QEMU-backed Linux VM viewer via Docker, and
 - validating the host-to-guest runtime bridge used for this phase.
 
+## Shared host path
+QEMU sessions can mount a host path into the container at `/shared/hostshare`, which the guest can then mount via 9p using the `shared` mount tag.
+
+This is the intended path for dogfooding local apps such as `../taskers` without inventing a second transport.
+
 ## Regression baseline
 Run the Xvfb smoke eval after QEMU changes:
 ```bash
 ACU_BASE_URL=http://127.0.0.1:3000 python scripts/run-smoke-eval.py
 ```
 
-## QEMU container notes
-- Default container image: `qemux/qemu`
-- Default boot target: `alpine`
-- If `/dev/kvm` is unavailable, sessions can set `disable_kvm: true` (or `KVM=N`) and rely on slower emulation.
-- The phase bridge transport uses forwarded TCP/HTTP from the host/provider to the in-guest runtime.
-- The guest runtime should auto-start deterministically and pass health checks before `bridge_status` becomes `runtime_ready`.
-- `viewer_url` remains available for debugging even after bridge readiness.
-- Remote CDP is a development fallback, not the primary QEMU trust-boundary answer.
+## QEMU image preparation
+Prepare or warm image assets with:
+```bash
+python3 scripts/qemu_guest_assets.py ensure-image --profile regression --cache-root artifacts/qemu-image-cache --guest-runtime-binary target/debug/guest-runtime
+python3 scripts/qemu_guest_assets.py ensure-image --profile product --cache-root artifacts/qemu-image-cache --guest-runtime-binary target/debug/guest-runtime
+```
+
+The product guest uses a prepared Ubuntu GNOME image. The regression fixture may be lighter, but must keep the same guest-runtime readiness and action protocol.
+
+## Acceptance scripts
+- regression bridge proof:
+  ```bash
+  ACU_BASE_URL=http://127.0.0.1:3000 python scripts/run-qemu-acceptance.py
+  ```
+- Taskers dogfood proof:
+  ```bash
+  ACU_BASE_URL=http://127.0.0.1:3000 python scripts/run-taskers-qemu-dogfood.py
+  ```
+
+## Lifecycle semantics
+`bridge_status` remains the coarse bridge lifecycle (`viewer_only`, `bridge_waiting`, `runtime_ready`, `failed`).
+
+`readiness_state` is the stricter readiness ladder:
+- `booting`
+- `desktop_ready`
+- `bridge_listening`
+- `bridge_attached`
+- `runtime_ready`
+- `failed`
+
+`runtime_ready` should only appear after the host can reach `/health` and attach a remote runtime session.

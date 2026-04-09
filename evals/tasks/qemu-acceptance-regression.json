@@ -1,0 +1,16 @@
+{
+  "id": "qemu-acceptance-regression",
+  "provider": "qemu",
+  "profile": "regression",
+  "description": "Provision the lighter regression fixture, wait for runtime_ready, install jq, verify jq --version, and read a file back through guest-runtime.",
+  "success": [
+    "session reaches bridge_status=runtime_ready",
+    "session reaches readiness_state=runtime_ready",
+    "jq installs successfully",
+    "jq --version output is captured",
+    "read_file returns the written version file"
+  ],
+  "artifacts": [
+    "artifacts/qemu-acceptance.json"
+  ]
+}
