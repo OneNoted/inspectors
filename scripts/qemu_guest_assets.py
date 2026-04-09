@@ -9,7 +9,6 @@ import subprocess
 import tempfile
 import textwrap
 import time
-import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -123,7 +122,17 @@ def product_user_data(browser_command: str, public_key: str) -> str:
         package_update: true
         package_reboot_if_required: false
         packages:
-          - ubuntu-desktop-minimal
+          - gdm3
+          - gnome-shell
+          - gnome-session
+          - gnome-session-bin
+          - gnome-terminal
+          - nautilus
+          - gnome-control-center
+          - xorg
+          - xserver-xorg
+          - xserver-xorg-video-all
+          - epiphany-browser
           - xdotool
           - x11-utils
           - x11-xserver-utils
@@ -143,8 +152,7 @@ def product_user_data(browser_command: str, public_key: str) -> str:
               WaylandEnable=false
               AutomaticLoginEnable=true
               AutomaticLogin=ubuntu
-          - path: /home/ubuntu/.config/autostart/acu-guest-runtime.desktop
-            owner: ubuntu:ubuntu
+          - path: /etc/xdg/autostart/acu-guest-runtime.desktop
             permissions: '0644'
             content: |
               [Desktop Entry]
@@ -156,9 +164,8 @@ def product_user_data(browser_command: str, public_key: str) -> str:
         runcmd:
           - [ bash, -lc, 'systemctl disable --now ufw || true' ]
           - [ bash, -lc, 'modprobe 9pnet_virtio || true; modprobe 9p || true; mkdir -p /mnt/shared; mount -t 9p -o trans=virtio shared /mnt/shared || true' ]
-          - [ bash, -lc, 'install -d -m 0755 -o ubuntu -g ubuntu /home/ubuntu/.config/autostart' ]
           - [ bash, -lc, 'install -m 0755 /mnt/shared/guest-runtime /usr/local/bin/acu-guest-runtime' ]
-          - [ bash, -lc, 'chown ubuntu:ubuntu /home/ubuntu/.config/autostart/acu-guest-runtime.desktop' ]
+          - [ bash, -lc, 'ln -sf /usr/bin/epiphany-browser /usr/local/bin/firefox || true' ]
           - [ bash, -lc, 'systemctl set-default graphical.target || true' ]
         power_state:
           mode: reboot
@@ -206,19 +213,6 @@ def build_seed_iso(qemu_image: str, work_dir: Path, user_data: str, meta_data: s
     generated = seed_dir / "seed.iso"
     shutil.move(str(generated), seed_iso)
     return seed_iso
-
-
-def wait_for_url(url: str, timeout_s: int) -> None:
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        try:
-            with urllib.request.urlopen(url, timeout=10) as response:
-                if response.status < 500:
-                    return
-        except Exception:
-            pass
-        time.sleep(5)
-    raise TimeoutError(f"timed out waiting for {url}")
 
 
 def inspect_container_ip(container_name: str) -> str:
@@ -293,7 +287,9 @@ def ensure_image(profile: str, cache_root: Path, guest_runtime_binary: Path, qem
 
     base_image = download_if_missing(base_url, cache_root / "base" / "ubuntu-noble-cloudimg-amd64.img")
     private_key, public_key = ensure_ssh_keypair(cache_root)
-    work_dir = Path(tempfile.mkdtemp(prefix=f"acu-qemu-{profile}-"))
+    work_dir = Path(
+        tempfile.mkdtemp(prefix=f"acu-qemu-{profile}-", dir=str(ensure_dir(cache_root / "_build")))
+    )
     build_image = work_dir / "boot.qcow2"
     shutil.copy2(base_image, build_image)
     resize_qcow2(qemu_image, build_image, PROFILE_DISK_GB[profile])

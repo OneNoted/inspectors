@@ -613,14 +613,12 @@ async fn create_qemu_session(
 
     if let Some(remote_runtime_url) = remote_runtime_url {
         let bridge_timeout = match qemu_profile {
-            QemuSessionProfile::Product => std::cmp::max(
-                state.qemu_bridge_probe_timeout,
-                Duration::from_secs(180),
-            ),
-            QemuSessionProfile::Regression => std::cmp::max(
-                state.qemu_bridge_probe_timeout,
-                Duration::from_secs(90),
-            ),
+            QemuSessionProfile::Product => {
+                std::cmp::max(state.qemu_bridge_probe_timeout, Duration::from_secs(180))
+            }
+            QemuSessionProfile::Regression => {
+                std::cmp::max(state.qemu_bridge_probe_timeout, Duration::from_secs(90))
+            }
         };
         tokio::spawn(monitor_qemu_bridge(QemuBridgeMonitor {
             sessions: state.sessions.clone(),
@@ -836,8 +834,8 @@ async fn ensure_qemu_profile_image(
             json!({ "code": "guest_runtime_exe_missing", "message": error.to_string() }),
         )
     })?;
-    let qemu_container_image = std::env::var("ACU_QEMU_CONTAINER_IMAGE")
-        .unwrap_or_else(|_| "qemux/qemu".to_string());
+    let qemu_container_image =
+        std::env::var("ACU_QEMU_CONTAINER_IMAGE").unwrap_or_else(|_| "qemux/qemu".to_string());
     let output = Command::new("python3")
         .args([
             script_path.to_string_lossy().as_ref(),
@@ -871,17 +869,16 @@ async fn ensure_qemu_profile_image(
             }),
         ));
     }
-    let ensured: EnsuredQemuImage =
-        serde_json::from_slice(&output.stdout).map_err(|error| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                json!({
-                    "code": "qemu_asset_builder_decode_failed",
-                    "message": error.to_string(),
-                    "stdout": String::from_utf8_lossy(&output.stdout),
-                }),
-            )
-        })?;
+    let ensured: EnsuredQemuImage = serde_json::from_slice(&output.stdout).map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({
+                "code": "qemu_asset_builder_decode_failed",
+                "message": error.to_string(),
+                "stdout": String::from_utf8_lossy(&output.stdout),
+            }),
+        )
+    })?;
     Ok(PathBuf::from(ensured.image_path))
 }
 
@@ -1024,13 +1021,14 @@ fn docker_run_args(spec: &QemuContainerSpec<'_>, launch_mode: QemuLaunchMode) ->
         args.push("-v".to_string());
         args.push(format!("{}:/seed.iso:ro", seed_iso_path.to_string_lossy()));
         args.push("-e".to_string());
-        args.push(
-            "ARGUMENTS=-drive file=/seed.iso,format=raw,media=cdrom,readonly=on".to_string(),
-        );
+        args.push("ARGUMENTS=-drive file=/seed.iso,format=raw,media=cdrom,readonly=on".to_string());
     }
     if let Some(shared_host_path) = spec.shared_host_path {
         args.push("-v".to_string());
-        args.push(format!("{}:/shared/hostshare:ro", shared_host_path.to_string_lossy()));
+        args.push(format!(
+            "{}:/shared/hostshare:ro",
+            shared_host_path.to_string_lossy()
+        ));
     }
     if spec.disable_kvm {
         args.push("-e".to_string());
@@ -1590,8 +1588,7 @@ async fn next_display(state: &AppState) -> String {
 mod tests {
     use super::{
         QemuContainerSpec, QemuLaunchMode, docker_run_args, merge_capabilities,
-        parse_published_port, resolve_qemu_endpoint,
-        should_retry_qemu_without_published_ports,
+        parse_published_port, resolve_qemu_endpoint, should_retry_qemu_without_published_ports,
     };
     use std::path::Path;
 
@@ -1658,17 +1655,20 @@ mod tests {
         };
         let args = docker_run_args(&spec, QemuLaunchMode::BridgeNetwork);
         assert!(args.iter().any(|arg| arg == "BOOT=/boot.qcow2"));
-        assert!(args
-            .iter()
-            .any(|arg| arg.contains("/tmp/boot.qcow2:/boot.qcow2")));
-        assert!(args
-            .iter()
-            .any(|arg| arg.contains("/tmp/seed.iso:/seed.iso:ro")));
+        assert!(
+            args.iter()
+                .any(|arg| arg.contains("/tmp/boot.qcow2:/boot.qcow2"))
+        );
+        assert!(
+            args.iter()
+                .any(|arg| arg.contains("/tmp/seed.iso:/seed.iso:ro"))
+        );
         assert!(args.iter().any(|arg| {
             arg == "ARGUMENTS=-drive file=/seed.iso,format=raw,media=cdrom,readonly=on"
         }));
-        assert!(args
-            .iter()
-            .any(|arg| arg.contains("/tmp/shared:/shared/hostshare:ro")));
+        assert!(
+            args.iter()
+                .any(|arg| arg.contains("/tmp/shared:/shared/hostshare:ro"))
+        );
     }
 }

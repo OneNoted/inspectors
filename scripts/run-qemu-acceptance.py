@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -47,6 +48,10 @@ install_command = "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get inst
 install_receipt = client.perform_action(session_id, {"kind": "run_command", "command": install_command})
 read_receipt = client.perform_action(session_id, {"kind": "read_file", "path": "/tmp/acu-jq-version.txt"})
 observation = client.get_observation(session_id)
+artifacts_dir = Path("artifacts")
+artifacts_dir.mkdir(exist_ok=True)
+with urllib.request.urlopen(f"{BASE_URL}/api/sessions/{session_id}/screenshot") as response:
+    (artifacts_dir / "qemu-acceptance.png").write_bytes(response.read())
 
 result = {
     "task_id": "qemu-acceptance",
@@ -60,9 +65,12 @@ result = {
         "duration_ms": int((time.time() - started) * 1000),
         "step_count": 3,
         "human_intervention": 0,
-        "artifact_path": observation.get("screenshot", {}).get("artifact_path"),
+        "artifact_path": str(artifacts_dir / "qemu-acceptance.png"),
     },
 }
-Path("artifacts").mkdir(exist_ok=True)
 Path("artifacts/qemu-acceptance.json").write_text(json.dumps(result, indent=2))
+try:
+    client._request(f"/api/sessions/{session_id}", "DELETE", {})
+except Exception:
+    pass
 print("wrote artifacts/qemu-acceptance.json")
