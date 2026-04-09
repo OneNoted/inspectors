@@ -1,6 +1,11 @@
+import { buildScreenshotUrl, describeLiveDesktopView, getLiveDesktopView } from './live-view.js';
+
 const sessionMeta = document.getElementById('session-meta');
 const desktopImage = document.getElementById('desktop-image');
 const desktopPanelTitle = document.getElementById('desktop-panel-title');
+const liveViewBadge = document.getElementById('live-view-badge');
+const liveViewTrust = document.getElementById('live-view-trust');
+const desktopPlaceholder = document.getElementById('desktop-placeholder');
 const viewerFrame = document.getElementById('viewer-frame');
 const viewerLink = document.getElementById('viewer-link');
 const observation = document.getElementById('observation');
@@ -28,34 +33,51 @@ function updateProviderOptions() {
 }
 
 function summarizeSession(session) {
+  const liveView = getLiveDesktopView(session);
   const parts = [
     `provider=${session.provider}`,
     `bridge=${session.bridge_status ?? 'n/a'}`,
     `ready=${session.readiness_state ?? 'n/a'}`,
+    `view=${liveView.mode}/${liveView.status}`,
   ];
   if (session.qemu_profile) parts.push(`profile=${session.qemu_profile}`);
-  if (session.viewer_url) parts.push('live-view=available');
   sessionSummary.textContent = parts.join(' · ');
 }
 
 function updateLiveView(session) {
-  if (session?.viewer_url) {
-    if (liveViewUrl !== session.viewer_url) {
-      liveViewUrl = session.viewer_url;
-      viewerFrame.src = session.viewer_url;
-      viewerLink.href = session.viewer_url;
-      viewerLink.hidden = false;
+  const liveView = getLiveDesktopView(session);
+  const description = describeLiveDesktopView(session);
+  desktopPanelTitle.textContent = description.title;
+  liveViewBadge.textContent = description.badge;
+  liveViewTrust.textContent = description.trustText;
+  desktopPlaceholder.textContent = description.placeholderText;
+  desktopPlaceholder.hidden = !description.showPlaceholder;
+
+  if (description.showFrame && liveView.canonical_url) {
+    if (liveViewUrl !== liveView.canonical_url) {
+      liveViewUrl = liveView.canonical_url;
+      viewerFrame.src = liveView.canonical_url;
     }
     viewerFrame.hidden = false;
     desktopImage.hidden = true;
-    desktopPanelTitle.textContent = 'Live VM view';
   } else {
     liveViewUrl = null;
     viewerFrame.hidden = true;
     viewerFrame.removeAttribute('src');
+    desktopImage.hidden = !description.showImage;
+  }
+
+  if (description.showImage && liveView.mode === 'screenshot_poll') {
+    const screenshotUrl = buildScreenshotUrl(session.id, liveView);
+    if (screenshotUrl) desktopImage.src = screenshotUrl;
+  }
+
+  if (liveView.debug_url) {
+    viewerLink.href = liveView.debug_url;
+    viewerLink.textContent = description.debugLinkLabel ?? 'Open debug viewer';
+    viewerLink.hidden = false;
+  } else {
     viewerLink.hidden = true;
-    desktopImage.hidden = false;
-    desktopPanelTitle.textContent = 'Live desktop screenshot';
   }
 }
 
@@ -71,11 +93,6 @@ async function refresh() {
   historyEl.textContent = JSON.stringify(obs.action_history ?? [], null, 2);
   tasksEl.textContent = JSON.stringify(dashboard.tasks ?? [], null, 2);
   updateLiveView(session);
-  if (!session.viewer_url) {
-    desktopImage.src = `/api/sessions/${sessionId}/screenshot?ts=${Date.now()}`;
-  } else if ((session.readiness_state ?? '') === 'runtime_ready') {
-    desktopImage.src = `/api/sessions/${sessionId}/screenshot?ts=${Date.now()}`;
-  }
 }
 
 document.getElementById('create-session').addEventListener('click', async () => {
@@ -119,6 +136,15 @@ document.getElementById('run-action').addEventListener('click', async () => {
   if (!sessionId) return;
   await json(`/api/sessions/${sessionId}/actions`, { method: 'POST', body: actionPayload.value });
   await refresh();
+});
+
+desktopImage.addEventListener('error', () => {
+  desktopPlaceholder.hidden = false;
+  desktopPlaceholder.textContent = 'Screenshot fallback unavailable';
+});
+
+desktopImage.addEventListener('load', () => {
+  if (!desktopImage.hidden) desktopPlaceholder.hidden = true;
 });
 
 setInterval(() => { refresh().catch(() => {}); }, 3000);

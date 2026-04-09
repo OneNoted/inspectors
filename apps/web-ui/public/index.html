@@ -58,11 +58,18 @@
       </section>
       <section class="panel desktop">
         <div class="desktop-header">
-          <h2 id="desktop-panel-title">Live desktop screenshot</h2>
-          <a id="viewer-link" href="#" target="_blank" rel="noreferrer" hidden>Open viewer in new tab</a>
+          <div>
+            <h2 id="desktop-panel-title">Live desktop view</h2>
+            <p id="live-view-trust" class="subtle live-view-trust">No session selected.</p>
+          </div>
+          <div class="desktop-actions">
+            <span id="live-view-badge" class="status-badge">Unavailable</span>
+            <a id="viewer-link" href="#" target="_blank" rel="noreferrer" hidden>Open debug viewer</a>
+          </div>
         </div>
         <iframe id="viewer-frame" title="Live VM viewer" hidden></iframe>
-        <img id="desktop-image" alt="Desktop screenshot" />
+        <img id="desktop-image" alt="Desktop screenshot" hidden />
+        <div id="desktop-placeholder" class="desktop-placeholder">Live desktop unavailable</div>
         <pre id="observation"></pre>
       </section>
       <section class="panel history">
