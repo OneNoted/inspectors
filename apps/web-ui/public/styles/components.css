@@ -27,15 +27,15 @@ label {
   font-weight: 600;
   letter-spacing: var(--tracking-mid);
   text-transform: uppercase;
-  color: var(--text-tertiary);
-  margin-bottom: 6px;
+  color: var(--ctp-overlay1);
+  margin-bottom: 5px;
   user-select: none;
 }
 
 label > input,
 label > select,
 label > textarea {
-  margin-top: 6px;
+  margin-top: 5px;
 }
 
 /* =============================================================
@@ -93,7 +93,7 @@ textarea {
 select {
   appearance: none;
   -webkit-appearance: none;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10' fill='none' stroke='%238a8f98' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='2 4 5 7 8 4'/></svg>");
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10' fill='none' stroke='%237f849c' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='2 4 5 7 8 4'/></svg>");
   background-repeat: no-repeat;
   background-position: right 10px center;
   padding-right: 28px;
@@ -168,17 +168,18 @@ button.btn {
 /* Primary */
 .btn-primary {
   --btn-bg: var(--accent);
-  --btn-border: rgba(255, 255, 255, 0.14);
-  --btn-text: #ffffff;
+  --btn-border: rgba(203, 166, 247, 0.35);
+  --btn-text: var(--ctp-crust);
   box-shadow: var(--shadow-1);
+  font-weight: 600;
 }
 .btn-primary:hover {
   --btn-bg: var(--accent-hover);
-  --btn-border: rgba(255, 255, 255, 0.2);
+  --btn-border: rgba(203, 166, 247, 0.5);
 }
 .btn-primary:active { --btn-bg: var(--accent-active); }
-.btn-primary .icon { color: rgba(255, 255, 255, 0.85); }
-.btn-primary:hover .icon { color: #ffffff; }
+.btn-primary .icon { color: var(--ctp-mantle); }
+.btn-primary:hover .icon { color: var(--ctp-crust); }
 
 /* Ghost */
 .btn-ghost {
@@ -194,13 +195,13 @@ button.btn {
 
 /* Danger-subtle */
 .btn-danger {
-  --btn-border: rgba(235, 87, 87, 0.25);
-  color: #f3a7a7;
+  --btn-border: rgba(243, 139, 168, 0.22);
+  color: var(--ctp-maroon);
 }
 .btn-danger:hover {
   --btn-bg: var(--danger-muted);
-  --btn-border: rgba(235, 87, 87, 0.45);
-  color: #ffc4c4;
+  --btn-border: rgba(243, 139, 168, 0.4);
+  color: var(--ctp-red);
 }
 
 /* Icon-only square button */
@@ -233,8 +234,8 @@ button.btn {
 .btn-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
+  gap: 5px;
+  margin-top: 4px;
 }
 
 /* =============================================================
@@ -319,7 +320,7 @@ kbd {
   height: 6px;
   border-radius: 999px;
   background: var(--pill-dot);
-  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 0 0 2px var(--ctp-crust);
   flex: 0 0 auto;
 }
 
@@ -333,10 +334,10 @@ kbd {
 }
 
 .pill-wrap[data-state="live"] {
-  --pill-dot: var(--success);
+  --pill-dot: var(--ctp-green);
   --pill-bg: var(--success-muted);
-  --pill-border: rgba(76, 183, 130, 0.32);
-  --pill-text: #b9e7cd;
+  --pill-border: rgba(166, 227, 161, 0.22);
+  --pill-text: var(--ctp-green);
 }
 
 .pill-wrap[data-state="live"]::before {
@@ -344,33 +345,33 @@ kbd {
 }
 
 .pill-wrap[data-state="screenshot"] {
-  --pill-dot: var(--warning);
+  --pill-dot: var(--ctp-peach);
   --pill-bg: var(--warning-muted);
-  --pill-border: rgba(242, 153, 74, 0.32);
-  --pill-text: #f3cfa2;
+  --pill-border: rgba(250, 179, 135, 0.22);
+  --pill-text: var(--ctp-peach);
 }
 
 .pill-wrap[data-state="fallback"] {
-  --pill-dot: var(--warning);
+  --pill-dot: var(--ctp-peach);
   --pill-bg: var(--bg-subtle);
-  --pill-border: rgba(242, 153, 74, 0.22);
+  --pill-border: rgba(250, 179, 135, 0.18);
   --pill-text: var(--text-secondary);
 }
 
 .pill-wrap[data-state="unavailable"],
 .pill-wrap[data-state="error"] {
-  --pill-dot: var(--danger);
+  --pill-dot: var(--ctp-red);
   --pill-bg: var(--danger-muted);
-  --pill-border: rgba(235, 87, 87, 0.32);
-  --pill-text: #f3b3b3;
+  --pill-border: rgba(243, 139, 168, 0.22);
+  --pill-text: var(--ctp-maroon);
 }
 
 @keyframes pill-pulse {
   0%, 100% {
-    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.4), 0 0 0 0 rgba(76, 183, 130, 0.4);
+    box-shadow: 0 0 0 2px var(--ctp-crust), 0 0 0 0 rgba(166, 227, 161, 0.35);
   }
   50% {
-    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.4), 0 0 0 5px rgba(76, 183, 130, 0);
+    box-shadow: 0 0 0 2px var(--ctp-crust), 0 0 0 5px rgba(166, 227, 161, 0);
   }
 }
 
@@ -425,9 +426,9 @@ kbd {
   font-weight: 500;
 }
 
-.chip[data-state="ok"] .chip-val { color: #b9e7cd; }
-.chip[data-state="warn"] .chip-val { color: #f3cfa2; }
-.chip[data-state="err"] .chip-val { color: #f3b3b3; }
+.chip[data-state="ok"] .chip-val { color: var(--ctp-green); }
+.chip[data-state="warn"] .chip-val { color: var(--ctp-peach); }
+.chip[data-state="err"] .chip-val { color: var(--ctp-red); }
 
 /* =============================================================
    Details / collapsible blocks
@@ -537,30 +538,30 @@ kbd {
 
 .desktop-stage[data-trust="live"] ~ .desktop-header .trust-chip,
 .desktop-stage[data-trust="live"] .trust-chip {
-  color: #cfeedb;
-  border-color: rgba(76, 183, 130, 0.28);
+  color: var(--ctp-green);
+  border-color: rgba(166, 227, 161, 0.2);
   background: var(--success-muted);
 }
 
-.desktop-stage[data-trust="live"] .trust-chip .icon { color: var(--success); }
+.desktop-stage[data-trust="live"] .trust-chip .icon { color: var(--ctp-green); }
 
 .desktop-stage[data-trust="screenshot"] .trust-chip,
 .desktop-stage[data-trust="fallback"] .trust-chip {
-  color: #f3cfa2;
-  border-color: rgba(242, 153, 74, 0.28);
+  color: var(--ctp-peach);
+  border-color: rgba(250, 179, 135, 0.2);
   background: var(--warning-muted);
 }
 .desktop-stage[data-trust="screenshot"] .trust-chip .icon,
-.desktop-stage[data-trust="fallback"] .trust-chip .icon { color: var(--warning); }
+.desktop-stage[data-trust="fallback"] .trust-chip .icon { color: var(--ctp-peach); }
 
 .desktop-stage[data-trust="unavailable"] .trust-chip,
 .desktop-stage[data-trust="error"] .trust-chip {
-  color: #f3b3b3;
-  border-color: rgba(235, 87, 87, 0.28);
+  color: var(--ctp-maroon);
+  border-color: rgba(243, 139, 168, 0.2);
   background: var(--danger-muted);
 }
 .desktop-stage[data-trust="unavailable"] .trust-chip .icon,
-.desktop-stage[data-trust="error"] .trust-chip .icon { color: var(--danger); }
+.desktop-stage[data-trust="error"] .trust-chip .icon { color: var(--ctp-red); }
 
 /* =============================================================
    Dialog (shortcut cheatsheet)
@@ -580,7 +581,7 @@ dialog {
 }
 
 dialog::backdrop {
-  background: rgba(3, 4, 6, 0.7);
+  background: rgba(17, 17, 27, 0.75);
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
 }
