@@ -239,6 +239,24 @@ button.btn {
   margin-top: 4px;
 }
 
+/* Task bar: create button fills left, icon controls flush right */
+.task-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.task-bar #create-task {
+  flex: 1 1 auto;
+}
+
+.task-controls {
+  display: flex;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
 /* =============================================================
    Pre / code blocks
    ============================================================= */
