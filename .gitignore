@@ -17,3 +17,5 @@ artifacts/
 __pycache__/
 .venv/
 *.pyc
+# Private operator-only helpers
+.private/
