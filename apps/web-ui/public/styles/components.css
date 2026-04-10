@@ -7,10 +7,11 @@
   height: 14px;
   flex: 0 0 auto;
   stroke: currentColor;
-  fill: none;
   stroke-width: 1.6;
   stroke-linecap: round;
   stroke-linejoin: round;
+  /* fill is NOT set here — each symbol controls its own fill via
+     presentation attributes so filled icons (bolt, play, pause) work. */
 }
 
 .icon-sm { width: 12px; height: 12px; }
