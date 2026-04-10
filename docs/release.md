@@ -22,6 +22,22 @@ Observed results for this alpha prep pass:
 - `scripts/run-smoke-eval.py` succeeds against a locally started stack
 - `cargo publish -p desktop-core --dry-run --allow-dirty` succeeds
 
+## Scripted release flow
+
+Use the helper script from the repository root:
+
+```bash
+./scripts/release-crates-alpha.sh --preflight
+```
+
+When you are ready to perform the real crates.io release, run:
+
+```bash
+./scripts/release-crates-alpha.sh --publish
+```
+
+The publish mode reruns preflight, publishes in dependency order, waits for each crate to appear on crates.io, and then runs install smoke checks from crates.io.
+
 ## Crates.io publish order
 
 The Rust crates form a dependency chain:
@@ -43,5 +59,5 @@ Until `desktop-core` is published, crates.io cannot resolve dry-runs for `linux-
 ## Notes
 
 - The JavaScript workspaces remain private/source-first in this alpha.
-- Repository/homepage metadata is still optional manual follow-up because no canonical remote URL is configured in this checkout.
+- Repository metadata now points at GitHub; homepage metadata is still optional manual follow-up.
 - The Xvfb smoke eval is the current verified end-to-end regression baseline; QEMU remains the default product path documented elsewhere in the repo.
