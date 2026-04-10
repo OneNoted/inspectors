@@ -42,6 +42,16 @@ bun run --filter @acu/sandbox-runner start
 
 Open `http://127.0.0.1:3000`, create a session, and drive it through the control plane or the SDKs. For the full local setup, smoke eval, examples, and install notes, start with the [getting started guide](docs/getting-started.md).
 
+Prefer Nix on Linux? This repo now ships a flake for the reproducible source-first path:
+
+```bash
+nix develop
+bun run build
+nix build .#guest-runtime
+```
+
+You can also install the Rust binaries directly from the flake with `nix profile install .#guest-runtime` or `nix profile install .#export-schemas`.
+
 ## Documentation
 
 - [Getting started](docs/getting-started.md)

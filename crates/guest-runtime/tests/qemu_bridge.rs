@@ -205,8 +205,8 @@ enum DockerMode {
 fn write_fake_docker(dir: &Path, mode: DockerMode) {
     let script = match mode {
         DockerMode::HealthyViewerOnly => {
-            r#"#!/usr/bin/env bash
-set -euo pipefail
+            r#"#!/bin/sh
+set -eu
 cmd="${1:-}"
 shift || true
 case "$cmd" in
@@ -214,9 +214,9 @@ case "$cmd" in
     echo "stub-container-id"
     ;;
   inspect)
-    if [[ "${1:-}" == "-f" && "${2:-}" == "{{.State.Running}}" ]]; then
+    if [ "${1:-}" = "-f" ] && [ "${2:-}" = "{{.State.Running}}" ]; then
       echo "true"
-    elif [[ "${1:-}" == "-f" && "${2:-}" == "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}" ]]; then
+    elif [ "${1:-}" = "-f" ] && [ "${2:-}" = "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}" ]; then
       echo "172.18.0.2"
     else
       echo "unexpected inspect args: $*" >&2
@@ -237,8 +237,8 @@ esac
 "#
         }
         DockerMode::BootFailure => {
-            r#"#!/usr/bin/env bash
-set -euo pipefail
+            r#"#!/bin/sh
+set -eu
 cmd="${1:-}"
 shift || true
 case "$cmd" in
@@ -246,9 +246,9 @@ case "$cmd" in
     echo "stub-container-id"
     ;;
   inspect)
-    if [[ "${1:-}" == "-f" && "${2:-}" == "{{.State.Running}}" ]]; then
+    if [ "${1:-}" = "-f" ] && [ "${2:-}" = "{{.State.Running}}" ]; then
       echo "false"
-    elif [[ "${1:-}" == "-f" && "${2:-}" == "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}" ]]; then
+    elif [ "${1:-}" = "-f" ] && [ "${2:-}" = "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}" ]; then
       echo ""
     else
       echo "unexpected inspect args: $*" >&2
@@ -295,10 +295,10 @@ async fn wait_for_health(port: u16) {
     loop {
         if let Ok((status, payload)) =
             std::panic::catch_unwind(|| json_request(port, "GET", "/health", None))
-            && status == 200
-            && payload["status"] == "ok"
         {
-            return;
+            if status == 200 && payload["status"] == "ok" {
+                return;
+            }
         }
         assert!(
             Instant::now() < deadline,

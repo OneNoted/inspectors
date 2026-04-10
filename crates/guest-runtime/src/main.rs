@@ -1585,17 +1585,17 @@ async fn delete_session(State(state): State<AppState>, AxumPath(id): AxumPath<St
     let handle = state.sessions.lock().await.remove(&id);
     match handle {
         Some(mut handle) => {
-            if let Some(remote_bridge) = handle.remote_bridge.as_ref()
-                && let Some(remote_session_id) = remote_bridge.session_id.as_ref()
-            {
-                let _ = state
-                    .http_client
-                    .delete(format!(
-                        "{}/api/sessions/{}",
-                        remote_bridge.base_url, remote_session_id
-                    ))
-                    .send()
-                    .await;
+            if let Some(remote_bridge) = handle.remote_bridge.as_ref() {
+                if let Some(remote_session_id) = remote_bridge.session_id.as_ref() {
+                    let _ = state
+                        .http_client
+                        .delete(format!(
+                            "{}/api/sessions/{}",
+                            remote_bridge.base_url, remote_session_id
+                        ))
+                        .send()
+                        .await;
+                }
             }
             match &mut handle.provider_handle {
                 SessionProviderHandle::Xvfb { child } => {

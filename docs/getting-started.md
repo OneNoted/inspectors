@@ -9,6 +9,14 @@ This guide covers the shortest path from a source checkout to a running local st
 - Python 3.11+
 - stable Rust 1.85+
 
+If you are on Linux with Nix enabled, you can skip the host-level installs above and use the repo flake instead:
+
+```bash
+nix develop
+```
+
+The flake shell provides Bun, Node 22, Python 3.11, Rust, Firefox, Xvfb/X11 helpers, ImageMagick, and the Docker client needed for the source-first workflow. It does not replace host virtualization setup for the QEMU product path.
+
 ## Install and build
 
 ```bash
@@ -17,6 +25,13 @@ bun run build
 ```
 
 That installs the JavaScript workspaces and builds both the TypeScript apps and the Rust workspace.
+
+With Nix, the same flow is:
+
+```bash
+nix develop -c bun ci
+nix develop -c bun run build
+```
 
 ## Start the stack
 
@@ -53,10 +68,23 @@ Install the runtime:
 cargo install --path crates/guest-runtime --locked
 ```
 
+Or install it from the flake:
+
+```bash
+nix profile install .#guest-runtime
+```
+
 Install the schema exporter:
 
 ```bash
 cargo install --path crates/desktop-core --bin export-schemas --locked
+export-schemas ./schemas
+```
+
+Or install it from the flake:
+
+```bash
+nix profile install .#export-schemas
 export-schemas ./schemas
 ```
 
