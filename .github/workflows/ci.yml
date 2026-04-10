@@ -51,9 +51,8 @@ jobs:
         run: bun run build
       - name: Package Rust crates
         run: |
-          cargo package -p desktop-core --locked
-          cargo package -p linux-backend --locked --no-verify
-          cargo package -p guest-runtime --locked --no-verify
+          cargo publish -p desktop-core --dry-run
+          cargo package --workspace --locked --no-verify
       - name: Smoke test installed Rust binaries
         run: |
           set -euo pipefail
