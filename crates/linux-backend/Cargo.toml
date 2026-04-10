@@ -3,11 +3,18 @@ name = "linux-backend"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Linux desktop action and observation backend for the Agent Computer Use Platform."
+readme = "README.md"
+documentation = "https://docs.rs/linux-backend"
+keywords = ["agent", "desktop", "linux", "automation", "x11"]
+categories = ["os::linux-apis", "development-tools"]
 
 [dependencies]
 base64.workspace = true
 chrono.workspace = true
-desktop-core = { path = "../desktop-core" }
+desktop-core.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

@@ -12,14 +12,21 @@ from python.sdk import ComputerUseClient
 
 client = ComputerUseClient()
 started = time.time()
-session = client.create_session()["session"]
+session = client.create_session(provider="xvfb")["session"]
 session_id = session["id"]
 latest_session = client.get_session(session_id)["session"]
 live_view = latest_session.get("live_desktop_view") or {}
 if live_view.get("mode") != "screenshot_poll":
     raise SystemExit(f"xvfb should advertise screenshot_poll live_desktop_view, got: {live_view}")
 observation = client.get_observation(session_id)
-open_browser = client.perform_action(session_id, {"kind": "browser_open", "url": "https://example.com"})
+command_receipt = client.perform_action(
+    session_id,
+    {"kind": "run_command", "command": "printf ready > /tmp/acu-smoke.txt"},
+)
+read_receipt = client.perform_action(
+    session_id,
+    {"kind": "read_file", "path": "/tmp/acu-smoke.txt"},
+)
 artifacts_dir = Path("artifacts")
 artifacts_dir.mkdir(exist_ok=True)
 with urllib.request.urlopen(f"{client.base_url}/api/sessions/{session_id}/screenshot") as response:
@@ -30,11 +37,14 @@ result = {
     "session": latest_session,
     "live_desktop_view": live_view,
     "observation": observation,
-    "open_browser": open_browser,
+    "run_command": command_receipt,
+    "read_file": read_receipt,
     "metrics": {
-        "success": open_browser.get("status") == "ok",
+        "success": command_receipt.get("status") == "ok"
+        and read_receipt.get("status") == "ok"
+        and ((read_receipt.get("result") or {}).get("contents") == "ready"),
         "duration_ms": duration_ms,
-        "step_count": 3,
+        "step_count": 4,
         "human_intervention": 0,
         "artifact_path": str(artifacts_dir / "smoke-eval.png"),
     },

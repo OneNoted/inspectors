@@ -46,6 +46,73 @@ test('describeLiveDesktopView keeps qemu regression in screenshot fallback mode'
   assert.equal(description.debugLinkLabel, 'Open debug VM viewer');
 });
 
+test('describeLiveDesktopView makes unverified xvfb browser fallback explicit', () => {
+  const session = {
+    id: 'xvfb-fallback',
+    provider: 'xvfb',
+    live_desktop_view: {
+      mode: 'screenshot_poll',
+      status: 'ready',
+      provider_surface: 'guest_xvfb_screenshot',
+      matches_action_plane: true,
+      canonical_url: '/api/sessions/xvfb/screenshot',
+      debug_url: null,
+      reason: 'xvfb is an honest local/dev screenshot fallback without a live desktop stream',
+      refresh_interval_ms: 3000,
+    },
+  };
+
+  const observation = {
+    active_window: null,
+    summary: {
+      active_window: null,
+    },
+    action_history: [
+      {
+        action: {
+          kind: 'browser_open',
+          url: 'https://example.com',
+        },
+        source: 'browser-open-fallback',
+      },
+    ],
+  };
+
+  const description = describeLiveDesktopView(session, observation);
+  assert.equal(description.badge, 'Fallback idle');
+  assert.equal(description.showImage, false);
+  assert.equal(description.showPlaceholder, true);
+  assert.match(description.trustText, /Use QEMU product/i);
+  assert.match(description.placeholderText, /No visible Xvfb window/i);
+});
+
+test('describeLiveDesktopView makes idle xvfb screenshot fallback explicit even without browser actions', () => {
+  const session = {
+    id: 'xvfb-idle',
+    provider: 'xvfb',
+    live_desktop_view: {
+      mode: 'screenshot_poll',
+      status: 'ready',
+      provider_surface: 'guest_xvfb_screenshot',
+      matches_action_plane: true,
+      canonical_url: '/api/sessions/xvfb/screenshot',
+      debug_url: null,
+      reason: 'xvfb is an honest local/dev screenshot fallback without a live desktop stream',
+      refresh_interval_ms: 3000,
+    },
+  };
+
+  const description = describeLiveDesktopView(session, {
+    active_window: null,
+    summary: { active_window: null },
+    action_history: [],
+  });
+  assert.equal(description.badge, 'Fallback ready');
+  assert.equal(description.showImage, false);
+  assert.equal(description.showPlaceholder, true);
+  assert.match(description.placeholderText, /No visible Xvfb window/i);
+});
+
 test('getLiveDesktopView falls back to unavailable metadata when absent', () => {
   const liveView = getLiveDesktopView({ viewer_url: null });
   assert.equal(liveView.mode, 'unavailable');

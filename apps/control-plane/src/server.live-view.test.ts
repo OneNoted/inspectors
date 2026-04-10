@@ -59,6 +59,16 @@ async function startHarness(): Promise<Harness> {
       res.end('console.log("viewer asset");');
       return;
     }
+    if (req.url === '/defaults.json') {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ resize: 'scale' }));
+      return;
+    }
+    if (req.url === '/mandatory.json') {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ reconnect: true, autoconnect: true }));
+      return;
+    }
     res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
     res.end('missing');
   });
@@ -95,6 +105,26 @@ async function startHarness(): Promise<Harness> {
           qemu_profile: 'product',
           viewer_url: viewerUrl,
         }),
+      }));
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/sessions') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        sessions: [
+          sessionRecord('qemu-product', {
+            provider: 'qemu',
+            qemu_profile: 'product',
+            viewer_url: viewerUrl,
+          }),
+          sessionRecord('xvfb', {
+            provider: 'xvfb',
+            qemu_profile: null,
+            viewer_url: null,
+            display: ':90',
+            capabilities: ['screenshot'],
+          }),
+        ],
       }));
       return;
     }
@@ -188,6 +218,20 @@ test('session metadata exposes truthful live_desktop_view modes', async () => {
   }
 });
 
+test('session list enriches live_desktop_view metadata for the picker', async () => {
+  const harness = await startHarness();
+  try {
+    const payload = await fetch(`${harness.baseUrl}/api/sessions`).then((res) => res.json()) as { sessions: any[] };
+    assert.equal(payload.sessions.length, 2);
+    assert.equal(payload.sessions[0].id, 'qemu-product');
+    assert.equal(payload.sessions[0].live_desktop_view.mode, 'stream');
+    assert.equal(payload.sessions[1].id, 'xvfb');
+    assert.equal(payload.sessions[1].live_desktop_view.mode, 'screenshot_poll');
+  } finally {
+    await stopHarness(harness);
+  }
+});
+
 test('screenshot route preserves success and stale-session failures', async () => {
   const harness = await startHarness();
   try {
@@ -213,6 +257,11 @@ test('live-view route proxies viewer assets and rejects non-stream sessions', as
     assert.equal(liveViewRoot.status, 200);
     assert.equal(liveViewRoot.headers.get('content-encoding'), null);
     assert.match(await liveViewRoot.text(), /Viewer Root/);
+
+    const liveViewDefaults = await fetch(`${harness.baseUrl}/api/sessions/qemu-product/live-view/defaults.json`);
+    assert.equal(liveViewDefaults.status, 200);
+    const defaultsPayload = await liveViewDefaults.json() as { path?: string };
+    assert.equal(defaultsPayload.path, '/api/sessions/qemu-product/live-view/websockify');
 
     const liveViewAsset = await fetch(`${harness.baseUrl}/api/sessions/qemu-product/live-view/app/ui.js`);
     assert.equal(liveViewAsset.status, 200);

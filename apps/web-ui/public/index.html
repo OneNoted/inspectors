@@ -97,8 +97,8 @@
             <div class="field">
               <label for="session-provider">Provider</label>
               <select id="session-provider">
+                <option value="qemu" selected>QEMU VM</option>
                 <option value="xvfb">Local Xvfb</option>
-                <option value="qemu">QEMU VM</option>
               </select>
             </div>
             <div class="collapse">
@@ -107,13 +107,13 @@
                   <div class="field">
                     <label for="qemu-profile">QEMU profile</label>
                     <select id="qemu-profile">
-                      <option value="product">Product guest (Ubuntu + GNOME)</option>
+                      <option value="product" selected>Product guest (Ubuntu + GNOME)</option>
                       <option value="regression">Regression fixture</option>
                     </select>
                   </div>
                   <div class="field">
                     <label for="shared-host-path">Shared host path</label>
-                    <input id="shared-host-path" type="text" value="../taskers" />
+                    <input id="shared-host-path" type="text" value="" placeholder="../taskers" />
                   </div>
                 </div>
               </div>
@@ -121,6 +121,12 @@
             <div class="field">
               <label for="existing-session">Attach existing session</label>
               <input id="existing-session" type="text" placeholder="session id or live-view URL" />
+            </div>
+            <div class="field">
+              <label for="session-picker">Choose running session</label>
+              <select id="session-picker">
+                <option value="">Select a running session</option>
+              </select>
             </div>
             <div class="btn-row">
               <button id="create-session" class="btn btn-primary">Create</button>

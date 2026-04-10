@@ -13,9 +13,8 @@ use axum::{
     routing::get,
 };
 use desktop_core::{
-    ActionReceipt, ActionRequest, ArtifactRef, CreateSessionRequest, Observation,
-    LiveDesktopView, RuntimeCapabilities, SessionRecord, StructuredError,
-    capability_descriptor,
+    ActionReceipt, ActionRequest, ArtifactRef, CreateSessionRequest, LiveDesktopView, Observation,
+    RuntimeCapabilities, SessionRecord, StructuredError, capability_descriptor,
 };
 use linux_backend::{BackendOptions, LinuxBackend};
 use reqwest::Client;
@@ -129,7 +128,10 @@ fn derive_live_desktop_view(record: &SessionRecord) -> LiveDesktopView {
             matches_action_plane: true,
             canonical_url: None,
             debug_url: None,
-            reason: Some("xvfb is an honest local/dev screenshot fallback without a live desktop stream".to_string()),
+            reason: Some(
+                "xvfb is an honest local/dev screenshot fallback without a live desktop stream"
+                    .to_string(),
+            ),
             refresh_interval_ms: Some(SCREENSHOT_POLL_INTERVAL_MS),
         },
         "display" => LiveDesktopView {
@@ -199,6 +201,7 @@ struct QemuContainerSpec<'a> {
     image: &'a str,
     boot: &'a str,
     artifacts_dir: &'a Path,
+    guest_runtime_binary_path: &'a Path,
     boot_image_path: Option<&'a Path>,
     seed_iso_path: Option<&'a Path>,
     shared_host_path: Option<&'a Path>,
@@ -227,7 +230,7 @@ async fn main() {
     let qemu_guest_runtime_port = std::env::var("ACU_QEMU_GUEST_RUNTIME_PORT")
         .ok()
         .and_then(|value| value.parse().ok())
-        .unwrap_or(port);
+        .unwrap_or(4001);
     let qemu_guest_display =
         std::env::var("ACU_QEMU_GUEST_DISPLAY").unwrap_or_else(|_| ":0".to_string());
     let qemu_bridge_probe_timeout = Duration::from_millis(
@@ -255,6 +258,8 @@ async fn main() {
         qemu_bridge_probe_timeout,
         qemu_bridge_probe_interval,
     };
+
+    cleanup_orphaned_qemu_containers().await;
 
     let app = Router::new()
         .route("/health", get(health))
@@ -285,6 +290,66 @@ async fn main() {
         .expect("serve guest runtime");
 }
 
+async fn cleanup_orphaned_qemu_containers() {
+    if !LinuxBackend::tool_exists("docker") {
+        return;
+    }
+
+    let output = Command::new("docker")
+        .args(["ps", "--format", "{{.Names}}", "--filter", "name=acu-qemu-"])
+        .output()
+        .await;
+    let Ok(output) = output else {
+        return;
+    };
+    if !output.status.success() {
+        return;
+    }
+
+    let names = String::from_utf8_lossy(&output.stdout);
+    for container_name in names.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let _ = Command::new("docker")
+            .args(["rm", "-f", container_name])
+            .output()
+            .await;
+    }
+}
+
+fn display_session_env(display: &str) -> Vec<(String, String)> {
+    if display != ":0" {
+        return vec![];
+    }
+
+    let mut env = Vec::new();
+    let runtime_dir = Path::new("/run/user/1000");
+    if runtime_dir.exists() {
+        env.push((
+            "XDG_RUNTIME_DIR".to_string(),
+            runtime_dir.to_string_lossy().to_string(),
+        ));
+        let session_bus = runtime_dir.join("bus");
+        if session_bus.exists() {
+            env.push((
+                "DBUS_SESSION_BUS_ADDRESS".to_string(),
+                format!("unix:path={}", session_bus.to_string_lossy()),
+            ));
+        }
+    }
+
+    for candidate in [
+        "/run/user/1000/gdm/Xauthority",
+        "/run/user/1000/Xauthority",
+        "/home/ubuntu/.Xauthority",
+    ] {
+        if Path::new(candidate).exists() {
+            env.push(("XAUTHORITY".to_string(), candidate.to_string()));
+            break;
+        }
+    }
+
+    env
+}
+
 fn arg_value(flag: &str) -> Option<String> {
     let mut iter = std::env::args().skip(1);
     while let Some(candidate) = iter.next() {
@@ -309,10 +374,11 @@ async fn create_session(
     Json(request): Json<CreateSessionRequest>,
 ) -> Response {
     match create_session_impl(&state, request).await {
-        Ok(session) => {
-            (StatusCode::CREATED, Json(json!({ "session": enrich_session_record(&session) })))
-                .into_response()
-        }
+        Ok(session) => (
+            StatusCode::CREATED,
+            Json(json!({ "session": enrich_session_record(&session) })),
+        )
+            .into_response(),
         Err((status, error)) => (status, Json(json!({ "error": error }))).into_response(),
     }
 }
@@ -358,7 +424,6 @@ async fn create_xvfb_session(
     }
 
     let session_id = Uuid::new_v4().to_string();
-    let display = next_display(state).await;
     let artifacts_dir = state.artifacts_root.join(&session_id);
     tokio::fs::create_dir_all(&artifacts_dir)
         .await
@@ -369,42 +434,54 @@ async fn create_xvfb_session(
             )
         })?;
 
-    let mut child = Command::new("Xvfb")
-        .arg(&display)
-        .args([
-            "-screen",
-            "0",
-            &format!("{}x{}x24", request.width, request.height),
-            "-nolisten",
-            "tcp",
-            "-ac",
-        ])
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|error| {
-            (
-                StatusCode::FAILED_DEPENDENCY,
-                json!({ "code": "xvfb_spawn_failed", "message": error.to_string() }),
-            )
-        })?;
+    let screen_geometry = format!("{}x{}x24", request.width, request.height);
+    let mut selected = None;
+    let mut last_status = None;
+    for display in candidate_displays(state).await {
+        let mut child = Command::new("Xvfb")
+            .arg(&display)
+            .args(["-screen", "0", &screen_geometry, "-nolisten", "tcp", "-ac"])
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|error| {
+                (
+                    StatusCode::FAILED_DEPENDENCY,
+                    json!({ "code": "xvfb_spawn_failed", "message": error.to_string() }),
+                )
+            })?;
 
-    tokio::time::sleep(Duration::from_millis(350)).await;
-    if let Some(status) = child.try_wait().map_err(|error| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({ "code": "xvfb_status_failed", "message": error.to_string() }),
-        )
-    })? {
-        return Err((
-            StatusCode::FAILED_DEPENDENCY,
-            json!({ "code": "xvfb_early_exit", "message": format!("Xvfb exited early: {status}") }),
-        ));
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        if let Some(status) = child.try_wait().map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "code": "xvfb_status_failed", "message": error.to_string() }),
+            )
+        })? {
+            last_status = Some((display, status.to_string()));
+            continue;
+        }
+
+        selected = Some((display, child));
+        break;
     }
+
+    let (display, child) = selected.ok_or_else(|| {
+        let message = if let Some((display, status)) = last_status {
+            format!("Xvfb exited early on {display}: {status}")
+        } else {
+            "Xvfb could not find an available display".to_string()
+        };
+        (
+            StatusCode::FAILED_DEPENDENCY,
+            json!({ "code": "xvfb_early_exit", "message": message }),
+        )
+    })?;
 
     let backend = LinuxBackend::new(BackendOptions {
         display: display.clone(),
         artifacts_dir: artifacts_dir.clone(),
         browser_command: state.browser_command.clone(),
+        session_env: vec![],
     });
     let record = SessionRecord {
         id: session_id.clone(),
@@ -467,6 +544,7 @@ async fn create_existing_display_session(
         display: display.clone(),
         artifacts_dir: artifacts_dir.clone(),
         browser_command: browser_command.clone(),
+        session_env: display_session_env(&display),
     });
     let record = SessionRecord {
         id: session_id.clone(),
@@ -517,6 +595,12 @@ async fn create_qemu_session(
 
     let qemu_profile = QemuSessionProfile::from_request(&request);
     let session_id = Uuid::new_v4().to_string();
+    let guest_runtime_binary_path = std::env::current_exe().map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "code": "guest_runtime_binary_unavailable", "message": error.to_string() }),
+        )
+    })?;
     let artifacts_dir = state.artifacts_root.join(&session_id);
     tokio::fs::create_dir_all(&artifacts_dir)
         .await
@@ -561,8 +645,15 @@ async fn create_qemu_session(
         boot = "/boot.qcow2".to_string();
         boot_image_path = Some(session_boot_image);
         seed_iso_path = Some(
-            build_qemu_session_seed_iso(&absolute_artifacts_dir, &session_id, qemu_profile, &image)
-                .await?,
+            build_qemu_session_seed_iso(
+                &absolute_artifacts_dir,
+                &session_id,
+                qemu_profile,
+                &image,
+                state.qemu_guest_runtime_port,
+                &state.browser_command,
+            )
+            .await?,
         );
     }
     let shared_host_path = if let Some(shared_host_path) = request.shared_host_path.as_deref() {
@@ -588,6 +679,7 @@ async fn create_qemu_session(
         image: &image,
         boot: &boot,
         artifacts_dir: &absolute_artifacts_dir,
+        guest_runtime_binary_path: &guest_runtime_binary_path,
         boot_image_path: boot_image_path.as_deref(),
         seed_iso_path: seed_iso_path.as_deref(),
         shared_host_path: shared_host_path.as_deref(),
@@ -859,11 +951,21 @@ async fn monitor_qemu_bridge(monitor: QemuBridgeMonitor) {
         }],
     };
 
+    let mut failed_container = None;
     let mut guard = monitor.sessions.lock().await;
     if let Some(handle) = guard.get_mut(&monitor.session_id) {
         handle.record.bridge_status = Some("failed".to_string());
         promote_readiness(&mut handle.record, "failed");
         handle.record.bridge_error = Some(bridge_error);
+        handle.record.viewer_url = None;
+        handle.record.runtime_base_url = None;
+        if let SessionProviderHandle::QemuDocker { container_name } = &handle.provider_handle {
+            failed_container = Some(container_name.clone());
+        }
+    }
+    drop(guard);
+    if let Some(container_name) = failed_container {
+        let _ = docker_output(&["rm", "-f", &container_name]).await;
     }
 }
 
@@ -973,6 +1075,8 @@ async fn build_qemu_session_seed_iso(
     session_id: &str,
     profile: QemuSessionProfile,
     qemu_image: &str,
+    runtime_port: u16,
+    browser_command: &str,
 ) -> Result<PathBuf, (StatusCode, Value)> {
     let seed_dir = artifacts_dir.join("seed");
     tokio::fs::create_dir_all(&seed_dir)
@@ -983,10 +1087,10 @@ async fn build_qemu_session_seed_iso(
                 json!({ "code": "qemu_seed_dir_failed", "message": error.to_string() }),
             )
         })?;
-    let user_data = format!(
-        "#cloud-config\nruncmd:\n  - [ bash, -lc, 'systemctl disable --now ufw || true' ]\n  - [ bash, -lc, 'echo {} > /var/lib/acu-session-profile' ]\n",
-        profile.as_str()
-    );
+    let user_data = match profile {
+        QemuSessionProfile::Regression => regression_seed_user_data(runtime_port, browser_command),
+        QemuSessionProfile::Product => product_seed_user_data(runtime_port, browser_command),
+    };
     let meta_data = format!(
         "instance-id: acu-session-{session_id}\nlocal-hostname: acu-{}\n",
         profile.as_str()
@@ -1037,6 +1141,77 @@ async fn build_qemu_session_seed_iso(
         ));
     }
     Ok(seed_dir.join("seed.iso"))
+}
+
+fn regression_seed_user_data(runtime_port: u16, browser_command: &str) -> String {
+    format!(
+        r#"#cloud-config
+packages:
+  - xdotool
+  - x11-utils
+  - x11-apps
+  - x11-xserver-utils
+  - xinit
+  - xvfb
+  - imagemagick
+  - curl
+write_files:
+  - path: /etc/systemd/system/acu-guest-runtime.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=ACU Guest Runtime
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      ExecStart=/usr/local/bin/acu-guest-runtime --host 0.0.0.0 --port {runtime_port} --browser-command {browser_command}
+      Restart=always
+      RestartSec=2
+      StandardOutput=journal+console
+      StandardError=journal+console
+
+      [Install]
+      WantedBy=multi-user.target
+runcmd:
+  - [ bash, -lc, 'systemctl disable --now ufw || true' ]
+  - [ bash, -lc, 'echo regression > /var/lib/acu-session-profile' ]
+  - [ bash, -lc, 'modprobe 9pnet_virtio || true; modprobe 9p || true; mkdir -p /mnt/shared; mount -t 9p -o trans=virtio shared /mnt/shared || true' ]
+  - [ bash, -lc, 'install -m 0755 /mnt/shared/guest-runtime /usr/local/bin/acu-guest-runtime' ]
+  - [ bash, -lc, 'systemctl daemon-reload && systemctl enable acu-guest-runtime.service && systemctl restart acu-guest-runtime.service' ]
+ "#,
+    )
+}
+
+fn product_seed_user_data(runtime_port: u16, browser_command: &str) -> String {
+    format!(
+        r#"#cloud-config
+write_files:
+  - path: /etc/gdm3/custom.conf
+    permissions: '0644'
+    content: |
+      [daemon]
+      WaylandEnable=false
+      AutomaticLoginEnable=true
+      AutomaticLogin=ubuntu
+  - path: /etc/xdg/autostart/acu-guest-runtime.desktop
+    permissions: '0644'
+    content: |
+      [Desktop Entry]
+      Type=Application
+      Name=ACU Guest Runtime
+      Exec=/usr/local/bin/acu-guest-runtime --host 0.0.0.0 --port {runtime_port} --browser-command {browser_command}
+      X-GNOME-Autostart-enabled=true
+      Terminal=false
+runcmd:
+  - [ bash, -lc, 'systemctl disable --now ufw || true' ]
+  - [ bash, -lc, 'echo product > /var/lib/acu-session-profile' ]
+  - [ bash, -lc, 'modprobe 9pnet_virtio || true; modprobe 9p || true; mkdir -p /mnt/shared; mount -t 9p -o trans=virtio shared /mnt/shared || true' ]
+  - [ bash, -lc, 'install -m 0755 /mnt/shared/guest-runtime /usr/local/bin/acu-guest-runtime' ]
+  - [ bash, -lc, 'ln -sf /usr/bin/epiphany-browser /usr/local/bin/firefox || true' ]
+  - [ bash, -lc, 'systemctl set-default graphical.target || true' ]
+ "#,
+    )
 }
 
 async fn launch_qemu_container(spec: &QemuContainerSpec<'_>) -> Result<QemuLaunchMode, String> {
@@ -1116,6 +1291,11 @@ fn docker_run_args(spec: &QemuContainerSpec<'_>, launch_mode: QemuLaunchMode) ->
             shared_host_path.to_string_lossy()
         ));
     }
+    args.push("-v".to_string());
+    args.push(format!(
+        "{}:/shared/guest-runtime:ro",
+        spec.guest_runtime_binary_path.to_string_lossy()
+    ));
     if spec.disable_kvm {
         args.push("-e".to_string());
         args.push("KVM=N".to_string());
@@ -1388,10 +1568,11 @@ async fn proxy_bridge_bytes(
 
 async fn get_session(State(state): State<AppState>, AxumPath(id): AxumPath<String>) -> Response {
     match session_snapshot(&state, &id).await {
-        Some(session) => {
-            (StatusCode::OK, Json(json!({ "session": enrich_session_record(&session) })))
-                .into_response()
-        }
+        Some(session) => (
+            StatusCode::OK,
+            Json(json!({ "session": enrich_session_record(&session) })),
+        )
+            .into_response(),
         None => (
             StatusCode::NOT_FOUND,
             Json(json!({ "error": "session not found" })),
@@ -1660,18 +1841,29 @@ fn runtime_capabilities(provider: &str, enrichments: Vec<String>) -> RuntimeCapa
     capability_descriptor(provider, enrichments)
 }
 
-async fn next_display(state: &AppState) -> String {
+async fn candidate_displays(state: &AppState) -> Vec<String> {
     let sessions = state.sessions.lock().await;
+    let in_use: BTreeSet<u16> = sessions
+        .values()
+        .filter_map(|handle| handle.record.display.as_deref())
+        .filter_map(|display| display.strip_prefix(':'))
+        .filter_map(|display| display.parse::<u16>().ok())
+        .collect();
+
+    let mut displays = Vec::new();
     for candidate in 90..140 {
-        let display = format!(":{candidate}");
-        let in_use = sessions
-            .values()
-            .any(|handle| handle.record.display.as_deref() == Some(display.as_str()));
-        if !in_use {
-            return display;
+        if !in_use.contains(&candidate) {
+            displays.push(format!(":{candidate}"));
         }
     }
-    format!(":{}", 140 + sessions.len())
+    let mut candidate = 140;
+    while displays.len() < 20 {
+        if !in_use.contains(&candidate) {
+            displays.push(format!(":{candidate}"));
+        }
+        candidate += 1;
+    }
+    displays
 }
 
 #[cfg(test)]
@@ -1738,6 +1930,7 @@ mod tests {
             image: "qemux/qemu",
             boot: "/boot.qcow2",
             artifacts_dir: Path::new("/tmp/artifacts"),
+            guest_runtime_binary_path: Path::new("/tmp/guest-runtime"),
             boot_image_path: Some(Path::new("/tmp/boot.qcow2")),
             seed_iso_path: Some(Path::new("/tmp/seed.iso")),
             shared_host_path: Some(Path::new("/tmp/shared")),
@@ -1762,6 +1955,33 @@ mod tests {
             args.iter()
                 .any(|arg| arg.contains("/tmp/shared:/shared/hostshare:ro"))
         );
+        assert!(
+            args.iter()
+                .any(|arg| arg.contains("/tmp/guest-runtime:/shared/guest-runtime:ro"))
+        );
+    }
+
+    #[test]
+    fn product_seed_user_data_reinstalls_guest_runtime_and_enables_gui_bootstrap() {
+        let user_data = super::product_seed_user_data(4900, "firefox");
+        assert!(user_data.contains(
+            "install -m 0755 /mnt/shared/guest-runtime /usr/local/bin/acu-guest-runtime"
+        ));
+        assert!(user_data.contains("/etc/xdg/autostart/acu-guest-runtime.desktop"));
+        assert!(user_data.contains("AutomaticLoginEnable=true"));
+        assert!(user_data.contains("systemctl set-default graphical.target"));
+        assert!(user_data.contains("acu-guest-runtime --host 0.0.0.0 --port 4900"));
+    }
+
+    #[test]
+    fn regression_seed_user_data_reinstalls_guest_runtime_and_enables_service() {
+        let user_data = super::regression_seed_user_data(4900, "firefox");
+        assert!(user_data.contains(
+            "install -m 0755 /mnt/shared/guest-runtime /usr/local/bin/acu-guest-runtime"
+        ));
+        assert!(user_data.contains("systemctl enable acu-guest-runtime.service"));
+        assert!(user_data.contains("echo regression > /var/lib/acu-session-profile"));
+        assert!(user_data.contains("acu-guest-runtime --host 0.0.0.0 --port 4900"));
     }
 
     #[test]
@@ -1805,7 +2025,10 @@ mod tests {
 
         let qemu_regression_view = derive_live_desktop_view(&qemu_regression);
         assert_eq!(qemu_regression_view.mode, "screenshot_poll");
-        assert_eq!(qemu_regression_view.provider_surface, "guest_xvfb_screenshot");
+        assert_eq!(
+            qemu_regression_view.provider_surface,
+            "guest_xvfb_screenshot"
+        );
         assert!(qemu_regression_view.debug_url.is_some());
 
         let xvfb_view = derive_live_desktop_view(&xvfb);

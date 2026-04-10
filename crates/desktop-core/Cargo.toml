@@ -3,6 +3,13 @@ name = "desktop-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Core schemas and shared types for the Agent Computer Use Platform desktop runtime."
+readme = "README.md"
+documentation = "https://docs.rs/desktop-core"
+keywords = ["agent", "desktop", "automation", "schema", "computer-use"]
+categories = ["development-tools"]
 
 [dependencies]
 chrono.workspace = true

@@ -371,7 +371,7 @@ pub struct LiveDesktopView {
 }
 
 fn default_provider() -> String {
-    "xvfb".to_string()
+    "qemu".to_string()
 }
 fn default_width() -> u32 {
     1440
@@ -522,9 +522,28 @@ mod tests {
     }
 
     #[test]
+    fn create_session_request_defaults_to_qemu_product_shape() {
+        let request: CreateSessionRequest =
+            serde_json::from_value(serde_json::json!({})).expect("default request");
+        assert_eq!(request.provider, "qemu");
+        assert_eq!(request.width, 1440);
+        assert_eq!(request.height, 900);
+        assert_eq!(request.qemu_profile, None);
+    }
+
+    #[test]
     fn schema_bundle_writes() {
         let temp = tempfile::tempdir().expect("tempdir");
         write_schema_bundle(temp.path()).expect("write schemas");
         assert!(temp.path().join("action.schema.json").exists());
+    }
+
+    #[test]
+    fn create_session_request_defaults_to_qemu_provider() {
+        let request: CreateSessionRequest =
+            serde_json::from_str(r#"{"width": 1280, "height": 720}"#).expect("request");
+        assert_eq!(request.provider, "qemu");
+        assert_eq!(request.width, 1280);
+        assert_eq!(request.height, 720);
     }
 }

@@ -1,7 +1,8 @@
 {
   "name": "@acu/sandbox-runner",
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.1",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "build": "node -e \"console.log('sandbox-runner: no build step')\"",

@@ -1,0 +1,18 @@
+# Changelog
+
+## 0.1.0-alpha.1 - 2026-04-10
+
+Initial public alpha release candidate for the repository and Rust workspace crates.
+
+### Highlights
+- Linux sandbox sessions with Xvfb-backed regression coverage and Docker-managed QEMU session support.
+- Rust guest runtime plus TypeScript control-plane, web UI, sandbox runner, and TypeScript/Python SDK entry points.
+- Canonical live desktop view metadata for product QEMU sessions, explicit bridge lifecycle states, and browser trust-boundary routing.
+- Crates.io-oriented Rust package metadata, crate-local READMEs, and documented local/runtime installation guidance.
+- Architecture, API, security, and QEMU bridge documentation, plus eval task scaffolds and CI basics.
+
+### Known limitations
+- The QEMU bridge still uses the current forwarded TCP/HTTP phase transport rather than a VM-native transport.
+- DOM-aware browser actions remain explicitly gated behind `ACU_ENABLE_PLAYWRIGHT=1`.
+- Replay video, richer accessibility metadata, and broader automation coverage are still future work.
+- The JavaScript workspaces remain private and source-distributed for this alpha.

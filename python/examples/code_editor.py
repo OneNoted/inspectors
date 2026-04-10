@@ -9,6 +9,6 @@ from python.sdk import ComputerUseClient
 EDITOR_COMMAND = "firefox"
 
 client = ComputerUseClient()
-session = client.create_session()["session"]
+session = client.create_session(provider="qemu", qemu_profile="product")["session"]
 client.perform_action(session["id"], {"kind": "open_app", "name": EDITOR_COMMAND})
 print(client.get_available_actions(session["id"]))

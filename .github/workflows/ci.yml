@@ -7,15 +7,75 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    env:
+      TMPDIR: ${{ github.workspace }}/.tmp
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install npm deps
-        run: npm install
-      - name: Build TypeScript packages
-        run: npm run build
-      - name: Rust tests
-        run: cargo test
+        with:
+          components: rustfmt, clippy
+      - name: Prepare temp dir
+        run: mkdir -p "$TMPDIR"
+      - name: Install JS deps
+        run: bun ci
+      - name: Lint
+        run: bun run lint
+      - name: Test
+        run: bun run test
+      - name: Install guest runtime
+        run: cargo install --path crates/guest-runtime --locked --root "$TMPDIR/acu-install"
+      - name: Smoke installed guest runtime
+        run: |
+          "$TMPDIR/acu-install/bin/guest-runtime" --port 4310 >"$TMPDIR/guest-runtime.log" 2>&1 &
+          guest_pid=$!
+          cleanup() {
+            kill "$guest_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for _ in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:4310/health > "$TMPDIR/guest-runtime-health.json"; then
+              cat "$TMPDIR/guest-runtime-health.json"
+              exit 0
+            fi
+            sleep 0.5
+          done
+          cat "$TMPDIR/guest-runtime.log"
+          exit 1
+      - name: Build
+        run: bun run build
+      - name: Package Rust crates
+        run: |
+          cargo package -p desktop-core --locked
+          cargo package -p linux-backend --locked --no-verify
+          cargo package -p guest-runtime --locked --no-verify
+      - name: Smoke test installed Rust binaries
+        run: |
+          set -euo pipefail
+          INSTALL_ROOT="$TMPDIR/install-root"
+          rm -rf "$INSTALL_ROOT"
+          cargo install --path crates/desktop-core --bin export-schemas --locked --root "$INSTALL_ROOT" --force
+          cargo install --path crates/guest-runtime --locked --root "$INSTALL_ROOT" --force
+
+          "$INSTALL_ROOT/bin/export-schemas" "$TMPDIR/schemas"
+          test -f "$TMPDIR/schemas/action.schema.json"
+
+          "$INSTALL_ROOT/bin/guest-runtime" --host 127.0.0.1 --port 4011 --artifacts-dir "$TMPDIR/runtime-artifacts" >"$TMPDIR/guest-runtime.log" 2>&1 &
+          RUNTIME_PID=$!
+          cleanup() {
+            kill "$RUNTIME_PID" 2>/dev/null || true
+            wait "$RUNTIME_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:4011/health >"$TMPDIR/guest-runtime-health.json"; then
+              break
+            fi
+            sleep 1
+          done
+          cat "$TMPDIR/guest-runtime-health.json"

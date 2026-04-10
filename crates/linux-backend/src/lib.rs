@@ -17,6 +17,7 @@ pub struct BackendOptions {
     pub display: String,
     pub artifacts_dir: PathBuf,
     pub browser_command: String,
+    pub session_env: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -39,6 +40,13 @@ impl LinuxBackend {
 
     pub fn browser_command(&self) -> &str {
         &self.options.browser_command
+    }
+
+    fn apply_display_env(&self, command: &mut Command) {
+        command.env("DISPLAY", &self.options.display);
+        for (key, value) in &self.options.session_env {
+            command.env(key, value);
+        }
     }
 
     pub fn capabilities(&self) -> Vec<String> {
@@ -286,13 +294,14 @@ impl LinuxBackend {
             .options
             .artifacts_dir
             .join(format!("screenshot-{}.png", Utc::now().timestamp_millis()));
-        let output = Command::new("import")
-            .args([
-                "-window",
-                "root",
-                screenshot_path.to_string_lossy().as_ref(),
-            ])
-            .env("DISPLAY", &self.options.display)
+        let mut command = Command::new("import");
+        command.args([
+            "-window",
+            "root",
+            screenshot_path.to_string_lossy().as_ref(),
+        ]);
+        self.apply_display_env(&mut command);
+        let output = command
             .output()
             .await
             .map_err(|error| self.io_error(error.to_string()))?;
@@ -367,9 +376,10 @@ impl LinuxBackend {
             .into_iter()
             .map(|value| value.as_ref().to_string())
             .collect();
-        let output = Command::new("xdotool")
-            .args(&rendered)
-            .env("DISPLAY", &self.options.display)
+        let mut command = Command::new("xdotool");
+        command.args(&rendered);
+        self.apply_display_env(&mut command);
+        let output = command
             .output()
             .await
             .map_err(|error| self.io_error(error.to_string()))?;
@@ -384,12 +394,14 @@ impl LinuxBackend {
     }
 
     async fn run_shell_background(&self, command: &str) -> Result<(), StructuredError> {
-        Command::new("sh")
+        let mut child = Command::new("sh");
+        child
             .arg("-lc")
             .arg(format!("{} >/dev/null 2>&1 &", command))
-            .env("DISPLAY", &self.options.display)
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::null());
+        self.apply_display_env(&mut child);
+        child
             .spawn()
             .map_err(|error| self.io_error(error.to_string()))?;
         Ok(())
@@ -408,9 +420,10 @@ impl LinuxBackend {
             .into_iter()
             .map(|value| value.as_ref().to_string())
             .collect();
-        let output = Command::new(binary)
-            .args(&rendered)
-            .env("DISPLAY", &self.options.display)
+        let mut command = Command::new(binary);
+        command.args(&rendered);
+        self.apply_display_env(&mut command);
+        let output = command
             .output()
             .await
             .map_err(|error| self.io_error(error.to_string()))?;
@@ -493,6 +506,7 @@ mod tests {
             display: ":99".to_string(),
             artifacts_dir: PathBuf::from("artifacts/test"),
             browser_command: "firefox".to_string(),
+            session_env: vec![],
         });
         assert!(backend.capabilities().contains(&"shell".to_string()));
     }

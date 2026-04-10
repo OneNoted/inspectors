@@ -1,6 +1,7 @@
 {
   "name": "@acu/ts-sdk",
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.1",
+  "license": "MIT",
   "type": "module",
   "exports": {
     ".": {
@@ -11,6 +12,6 @@
   "types": "./dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test dist/**/*.test.js"
+    "test": "bun run build && node --test dist/**/*.test.js"
   }
 }

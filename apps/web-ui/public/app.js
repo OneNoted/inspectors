@@ -18,6 +18,7 @@ const providerSelect = document.getElementById('session-provider');
 const qemuProfileSelect = document.getElementById('qemu-profile');
 const sharedHostPathInput = document.getElementById('shared-host-path');
 const existingSessionInput = document.getElementById('existing-session');
+const sessionPicker = document.getElementById('session-picker');
 const qemuOptions = document.getElementById('qemu-options');
 const sessionSummary = document.getElementById('session-summary');
 let sessionId = null;
@@ -44,6 +45,9 @@ function syncSessionLocation() {
   const nextUrl = buildSessionUrl(sessionId);
   window.history.replaceState({}, '', nextUrl);
   existingSessionInput.value = sessionId ?? '';
+  if (sessionPicker && sessionPicker.value !== (sessionId ?? '')) {
+    sessionPicker.value = sessionId ?? '';
+  }
 }
 
 function resetDesktopState(message = 'Live desktop unavailable') {
@@ -60,6 +64,47 @@ function resetDesktopState(message = 'Live desktop unavailable') {
   liveViewTrust.textContent = 'No session selected.';
 }
 
+function sessionOptionLabel(session) {
+  const parts = [session.id.slice(0, 8), session.provider];
+  if (session.qemu_profile) parts.push(session.qemu_profile);
+  parts.push(session.readiness_state ?? session.state ?? 'unknown');
+  return parts.join(' · ');
+}
+
+async function refreshSessionPicker() {
+  if (!sessionPicker) return;
+  try {
+    const payload = await json('/api/sessions');
+    const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
+    sessions.sort((left, right) => String(right.created_at ?? '').localeCompare(String(left.created_at ?? '')));
+
+    sessionPicker.replaceChildren();
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = sessions.length > 0 ? 'Select a running session' : 'No running sessions';
+    sessionPicker.append(placeholder);
+
+    for (const session of sessions) {
+      const option = document.createElement('option');
+      option.value = session.id;
+      option.textContent = sessionOptionLabel(session);
+      sessionPicker.append(option);
+    }
+
+    sessionPicker.disabled = sessions.length === 0;
+    sessionPicker.value = sessionId && sessions.some((session) => session.id === sessionId)
+      ? sessionId
+      : '';
+  } catch (error) {
+    sessionPicker.replaceChildren();
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = 'Sessions unavailable';
+    sessionPicker.append(option);
+    sessionPicker.disabled = true;
+  }
+}
+
 function summarizeSession(session) {
   const liveView = getLiveDesktopView(session);
   const parts = [
@@ -72,9 +117,9 @@ function summarizeSession(session) {
   sessionSummary.textContent = parts.join(' · ');
 }
 
-function updateLiveView(session) {
+function updateLiveView(session, observation) {
   const liveView = getLiveDesktopView(session);
-  const description = describeLiveDesktopView(session);
+  const description = describeLiveDesktopView(session, observation);
   desktopPanelTitle.textContent = description.title;
   liveViewBadge.textContent = description.badge;
   liveViewTrust.textContent = description.trustText;
@@ -110,19 +155,32 @@ function updateLiveView(session) {
 }
 
 async function refresh() {
+  await refreshSessionPicker();
   if (!sessionId) return;
   try {
     const sessionPayload = await json(`/api/sessions/${sessionId}`);
     const session = sessionPayload.session ?? sessionPayload;
-    const obs = await json(`/api/sessions/${sessionId}/observation`);
-    const dashboard = await json('/api/dashboard');
     summarizeSession(session);
     sessionMeta.textContent = JSON.stringify(sessionPayload, null, 2);
-    observation.textContent = JSON.stringify(obs.summary ?? obs, null, 2);
-    historyEl.textContent = JSON.stringify(obs.action_history ?? [], null, 2);
-    tasksEl.textContent = JSON.stringify(dashboard.tasks ?? [], null, 2);
-    updateLiveView(session);
+    updateLiveView(session, null);
     syncSessionLocation();
+
+    try {
+      const obs = await json(`/api/sessions/${sessionId}/observation`);
+      observation.textContent = JSON.stringify(obs.summary ?? obs, null, 2);
+      historyEl.textContent = JSON.stringify(obs.action_history ?? [], null, 2);
+      updateLiveView(session, obs);
+    } catch (error) {
+      observation.textContent = JSON.stringify({ error: String(error) }, null, 2);
+      historyEl.textContent = '[]';
+    }
+
+    try {
+      const dashboard = await json('/api/dashboard');
+      tasksEl.textContent = JSON.stringify(dashboard.tasks ?? [], null, 2);
+    } catch (error) {
+      tasksEl.textContent = JSON.stringify({ error: String(error) }, null, 2);
+    }
   } catch (error) {
     sessionSummary.textContent = `session=${sessionId} · unavailable`;
     sessionMeta.textContent = JSON.stringify({ error: String(error) }, null, 2);
@@ -160,6 +218,13 @@ document.getElementById('attach-session').addEventListener('click', async () => 
   }
   sessionId = nextSessionId;
   taskId = null;
+  await refresh();
+});
+sessionPicker?.addEventListener('change', async () => {
+  if (!sessionPicker.value) return;
+  sessionId = sessionPicker.value;
+  taskId = null;
+  existingSessionInput.value = sessionId;
   await refresh();
 });
 document.getElementById('clear-session').addEventListener('click', () => {
@@ -213,6 +278,10 @@ if (sessionId) {
   refresh().catch(() => {});
 } else {
   resetDesktopState();
+  refreshSessionPicker().catch(() => {});
 }
 
-setInterval(() => { refresh().catch(() => {}); }, 3000);
+setInterval(() => {
+  refreshSessionPicker().catch(() => {});
+  refresh().catch(() => {});
+}, 3000);

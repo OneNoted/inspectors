@@ -8,16 +8,15 @@ Returns control-plane health plus guest-runtime health.
 ### `POST /api/sessions`
 Create a sandbox session.
 
-Request example:
+Default request example (provider omitted -> `qemu` + `product`):
 ```json
 {
-  "provider": "xvfb",
   "width": 1440,
   "height": 900
 }
 ```
 
-QEMU request example:
+Explicit QEMU request example:
 ```json
 {
   "provider": "qemu",
@@ -25,6 +24,15 @@ QEMU request example:
   "shared_host_path": "../taskers",
   "width": 1280,
   "height": 720
+}
+```
+
+Explicit Xvfb fallback example:
+```json
+{
+  "provider": "xvfb",
+  "width": 1440,
+  "height": 900
 }
 ```
 
@@ -94,9 +102,9 @@ Return runtime health and current session count.
 
 ### `POST /api/sessions`
 Create a guest session. Supported providers:
-- `xvfb`
+- `qemu` (default product path when `provider` is omitted)
+- `xvfb` (explicit local/dev fallback)
 - `display`
-- `qemu`
 
 For QEMU, the host-side provider eventually attaches a remote runtime session using either:
 - `display` for the full-desktop product guest

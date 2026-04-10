@@ -11,8 +11,29 @@ export function getLiveDesktopView(session) {
   };
 }
 
-export function describeLiveDesktopView(session) {
+function getObservationActiveWindow(observation) {
+  if (!observation) return null;
+  if (typeof observation.active_window === 'string' && observation.active_window) {
+    return observation.active_window;
+  }
+  if (observation.active_window?.title) {
+    return observation.active_window.title;
+  }
+  if (typeof observation.summary?.active_window === 'string' && observation.summary.active_window) {
+    return observation.summary.active_window;
+  }
+  return null;
+}
+
+function hasUnverifiedBrowserFallback(observation) {
+  return (observation?.action_history ?? []).some((entry) =>
+    entry?.action?.kind === 'browser_open' && entry?.source === 'browser-open-fallback');
+}
+
+export function describeLiveDesktopView(session, observation = null) {
   const liveView = getLiveDesktopView(session);
+  const activeWindow = getObservationActiveWindow(observation);
+  const isIdleXvfbFallback = session?.provider === 'xvfb' && !activeWindow;
 
   if (liveView.mode === 'stream' && liveView.status === 'ready' && liveView.canonical_url) {
     return {
@@ -30,6 +51,24 @@ export function describeLiveDesktopView(session) {
   }
 
   if (liveView.mode === 'screenshot_poll' && liveView.status === 'ready' && liveView.canonical_url) {
+    if (isIdleXvfbFallback) {
+      const browserFallbackAttempted = hasUnverifiedBrowserFallback(observation);
+      return {
+        title: 'Desktop screenshot fallback',
+        badge: browserFallbackAttempted ? 'Fallback idle' : 'Fallback ready',
+        trustText: browserFallbackAttempted
+          ? 'Xvfb accepted the browser-open fallback, but no visible window appeared. Use QEMU product for a trustworthy browser view.'
+          : 'Xvfb fallback is running, but no visible window is open yet. Use QEMU product when you need a trustworthy live app view.',
+        showFrame: false,
+        showImage: false,
+        showPlaceholder: true,
+        placeholderText: browserFallbackAttempted
+          ? 'No visible Xvfb window appeared after browser_open'
+          : 'No visible Xvfb window is currently open',
+        debugLinkLabel: liveView.debug_url ? 'Open debug VM viewer' : null,
+      };
+    }
+
     return {
       title: 'Desktop screenshot fallback',
       badge: 'Screenshot fallback',

@@ -14,7 +14,7 @@ interface ReceiptPayload {
   completed_at: string;
   result: Record<string, unknown>;
   artifacts: { kind: string; path: string; mime_type?: string }[];
-  error: null;
+  error: unknown;
 }
 
 function okReceipt(actionType: string, result: Record<string, unknown> = {}): ReceiptPayload {
@@ -55,6 +55,50 @@ async function startFakeGuestRuntime() {
         vm_mode: 'qemu',
         enrichments: ['viewer'],
       }));
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/sessions/xvfb-fallback') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        session: {
+          id: 'xvfb-fallback',
+          provider: 'xvfb',
+          qemu_profile: null,
+          display: ':90',
+          width: 1440,
+          height: 900,
+          state: 'running',
+          created_at: new Date().toISOString(),
+          artifacts_dir: 'artifacts/runtime/xvfb-fallback',
+          capabilities: ['screenshot', 'browser_open'],
+          browser_command: 'firefox',
+          runtime_base_url: 'http://127.0.0.1:4001',
+          viewer_url: null,
+          live_desktop_view: null,
+          bridge_status: 'runtime_ready',
+          readiness_state: 'runtime_ready',
+          bridge_error: null,
+        },
+      }));
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/sessions/xvfb-fallback/observation') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        active_window: null,
+        summary: {
+          active_window: null,
+          display: ':90',
+        },
+      }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/sessions/xvfb-fallback/actions') {
+      actionPayloads.push(body);
+      const kind = String(body.kind ?? 'unknown');
+      const result = kind === 'browser_open' ? { url: body.url ?? null, mode: 'desktop_fallback' } : {};
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(okReceipt(kind, result)));
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/sessions/qemu-viewer/actions') {
@@ -122,6 +166,27 @@ test('browser_open fallback forwards task_id and browser_get_dom reuses cached H
     const domReceipt = await domResponse.json() as ReceiptPayload;
     assert.equal(domReceipt.status, 'ok');
     assert.match(String(domReceipt.result.dom_html), /QEMU viewer fallback/);
+  } finally {
+    await stopHarness(harness);
+  }
+});
+
+test('browser_open fallback becomes an explicit error when xvfb shows no visible window', async () => {
+  const harness = await startHarness();
+  try {
+    const response = await fetch(`${harness.baseUrl}/api/sessions/xvfb-fallback/actions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'browser_open',
+        url: 'https://example.com',
+      }),
+    });
+    assert.equal(response.status, 200);
+
+    const receipt = await response.json() as ReceiptPayload;
+    assert.equal(receipt.status, 'error');
+    assert.match(String((receipt.error as { code?: string })?.code), /browser_window_not_visible/);
   } finally {
     await stopHarness(harness);
   }

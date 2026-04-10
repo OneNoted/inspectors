@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 
 const guestPort = process.env.GUEST_PORT ?? '4001';
 const port = process.env.PORT ?? '3000';
+const controlPlaneWorkspace = '@acu/control-plane';
 
 function run(command, args, env = process.env) {
   return new Promise((resolve, reject) => {
@@ -16,7 +17,7 @@ function run(command, args, env = process.env) {
   });
 }
 
-await run('npm', ['run', 'build', '--workspace', '@acu/control-plane']);
+await run('bun', ['run', '--filter', controlPlaneWorkspace, 'build']);
 
 const guest = spawn('cargo', ['run', '-p', 'guest-runtime', '--', '--port', guestPort], {
   stdio: 'inherit',
@@ -34,7 +35,7 @@ process.on('SIGTERM', stop);
 
 await new Promise((resolve) => setTimeout(resolve, 1500));
 
-control = spawn('npm', ['run', 'start', '--workspace', '@acu/control-plane'], {
+control = spawn('bun', ['run', '--filter', controlPlaneWorkspace, 'start'], {
   stdio: 'inherit',
   env: { ...process.env, PORT: port, GUEST_RUNTIME_URL: `http://127.0.0.1:${guestPort}` },
 });

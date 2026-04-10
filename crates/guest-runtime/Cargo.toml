@@ -3,12 +3,19 @@ name = "guest-runtime"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Linux guest runtime service for the Agent Computer Use Platform."
+readme = "README.md"
+documentation = "https://docs.rs/guest-runtime"
+keywords = ["agent", "desktop", "linux", "runtime", "automation"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 axum.workspace = true
 chrono.workspace = true
-desktop-core = { path = "../desktop-core" }
-linux-backend = { path = "../linux-backend" }
+desktop-core.workspace = true
+linux-backend.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

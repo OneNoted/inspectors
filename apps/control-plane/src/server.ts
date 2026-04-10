@@ -136,6 +136,29 @@ function buildLiveViewProxyPath(pathname: string, sessionId: string): string | n
   return suffix.startsWith('/') ? suffix : `/${suffix}`;
 }
 
+function rewriteLiveViewBody(sessionId: string, proxyPath: string, contentType: string | null, body: Buffer): Buffer {
+  const websocketPath = `${buildLiveViewPath(sessionId)}websockify`;
+
+  if (contentType?.includes('text/html') && ['/', '/index.html', '/vnc.html'].includes(proxyPath)) {
+    return Buffer.from(
+      body.toString('utf8').replace(/value="websockify"/g, `value="${websocketPath}"`),
+      'utf8',
+    );
+  }
+
+  if (contentType?.includes('application/json') && ['/defaults.json', '/mandatory.json'].includes(proxyPath)) {
+    try {
+      const payload = JSON.parse(body.toString('utf8')) as Record<string, unknown>;
+      payload.path = websocketPath;
+      return Buffer.from(JSON.stringify(payload), 'utf8');
+    } catch {
+      return body;
+    }
+  }
+
+  return body;
+}
+
 function writeUpgradeError(socket: Duplex, status: number, message: string): void {
   socket.write(
     `HTTP/1.1 ${status} ${message}\r\nConnection: close\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: ${Buffer.byteLength(message)}\r\n\r\n${message}`,
@@ -362,6 +385,19 @@ function attachReceiptToTask(state: ControlPlaneState, taskId: string | undefine
 
 type BrowserAction = Extract<ActionRequest, { kind: 'browser_open' | 'browser_get_dom' | 'browser_click' | 'browser_type' | 'browser_screenshot' }>;
 
+function hasVisibleWindow(observation: Record<string, unknown> | null | undefined): boolean {
+  const direct = observation?.active_window;
+  if (typeof direct === 'string') return direct.trim().length > 0;
+  if (direct && typeof direct === 'object' && typeof (direct as { title?: unknown }).title === 'string') {
+    return ((direct as { title?: string }).title ?? '').trim().length > 0;
+  }
+  const summary = observation?.summary;
+  if (summary && typeof summary === 'object' && typeof (summary as { active_window?: unknown }).active_window === 'string') {
+    return (((summary as { active_window?: string }).active_window) ?? '').trim().length > 0;
+  }
+  return false;
+}
+
 function unsupportedBrowserReceipt(action: BrowserAction, message: string): ActionReceipt {
   return {
     status: 'error',
@@ -378,9 +414,37 @@ function unsupportedBrowserReceipt(action: BrowserAction, message: string): Acti
 async function handleBrowserAction(state: ControlPlaneState, sessionId: string, action: BrowserAction): Promise<ActionReceipt> {
   if (!playwrightEnabled) {
     if (action.kind === 'browser_open') {
-      const receipt = await guestJson<ActionReceipt>(state, `/api/sessions/${sessionId}/actions`, { method: 'POST', body: JSON.stringify(toGuestAction(action)) });
-      const snapshot = await fetchBrowserSnapshot(action.url);
-      if (snapshot) state.browserSnapshots.set(sessionId, snapshot);
+      let receipt = await guestJson<ActionReceipt>(state, `/api/sessions/${sessionId}/actions`, { method: 'POST', body: JSON.stringify(toGuestAction(action)) });
+      try {
+        const session = await getGuestSession(state, sessionId);
+        const observation = await guestJson<Record<string, unknown>>(state, `/api/sessions/${sessionId}/observation`);
+
+        if (session.provider === 'xvfb' && !hasVisibleWindow(observation)) {
+          receipt = {
+            ...receipt,
+            status: 'error',
+            error: {
+              code: 'browser_window_not_visible',
+              message: 'Xvfb did not expose a visible browser window after browser_open; use QEMU product for a trustworthy browser view.',
+              retryable: false,
+              category: 'browser',
+              details: {
+                provider: session.provider,
+                live_desktop_view: session.live_desktop_view ?? null,
+              },
+              artifact_refs: [],
+            },
+          };
+        }
+      } catch {
+        // Keep the legacy best-effort fallback behavior when session/observation lookups are unavailable.
+      }
+
+      if (receipt.status === 'ok') {
+        const snapshot = await fetchBrowserSnapshot(action.url);
+        if (snapshot) state.browserSnapshots.set(sessionId, snapshot);
+      }
+
       pushHistory(state, sessionId, { action: action as unknown as JsonObject, receipt: receipt as unknown as JsonObject, source: 'browser-open-fallback' });
       attachReceiptToTask(state, action.taskId, receipt);
       return receipt;
@@ -560,6 +624,19 @@ export function createRequestHandler(state: ControlPlaneState) {
         return;
       }
 
+      if (req.method === 'GET' && url.pathname === '/api/sessions') {
+        const upstream = await guestRequest(state, '/api/sessions');
+        if (upstream.status === 200 && Array.isArray(upstream.payload?.sessions)) {
+          json(res, 200, {
+            ...upstream.payload,
+            sessions: upstream.payload.sessions.map((session: SessionRecord) => withLiveDesktopView(session)),
+          });
+        } else {
+          json(res, upstream.status, upstream.payload);
+        }
+        return;
+      }
+
       if (req.method === 'POST' && url.pathname === '/api/sessions') {
         const body = await readJson(req);
         const upstream = await guestRequest(state, '/api/sessions', {
@@ -658,7 +735,15 @@ export function createRequestHandler(state: ControlPlaneState) {
           res.end();
           return;
         }
-        res.end(Buffer.from(await upstream.arrayBuffer()));
+        const body = Buffer.from(await upstream.arrayBuffer());
+        const rewritten = rewriteLiveViewBody(
+          sessionId,
+          proxyPath,
+          upstream.headers.get('content-type'),
+          body,
+        );
+        res.setHeader('content-length', String(rewritten.length));
+        res.end(rewritten);
         return;
       }
 

@@ -10,9 +10,10 @@ trap cleanup EXIT
 
 PORT=${PORT:-3000}
 GUEST_PORT=${GUEST_PORT:-4001}
+CONTROL_PLANE_WORKSPACE=@acu/control-plane
 
 cargo run -p guest-runtime -- --port "$GUEST_PORT" > /tmp/acu-guest-runtime.log 2>&1 &
 GUEST_PID=$!
 sleep 2
-npm run build --workspace @acu/control-plane
-PORT="$PORT" GUEST_RUNTIME_URL="http://127.0.0.1:${GUEST_PORT}" npm run start --workspace @acu/control-plane
+bun run --filter "$CONTROL_PLANE_WORKSPACE" build
+PORT="$PORT" GUEST_RUNTIME_URL="http://127.0.0.1:${GUEST_PORT}" bun run --filter "$CONTROL_PLANE_WORKSPACE" start
