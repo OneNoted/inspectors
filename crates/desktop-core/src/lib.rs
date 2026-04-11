@@ -72,6 +72,8 @@ pub enum ActionRequest {
     OpenApp {
         name: String,
         #[serde(default)]
+        run_as_user: Option<String>,
+        #[serde(default)]
         task_id: Option<String>,
     },
     FocusWindow {
@@ -89,6 +91,8 @@ pub enum ActionRequest {
         command: String,
         cwd: Option<String>,
         env: Option<BTreeMap<String, String>>,
+        #[serde(default)]
+        run_as_user: Option<String>,
         #[serde(default)]
         task_id: Option<String>,
     },
@@ -334,6 +338,9 @@ pub struct CreateSessionRequest {
     pub disable_kvm: Option<bool>,
     pub qemu_profile: Option<String>,
     pub shared_host_path: Option<String>,
+    pub desktop_user: Option<String>,
+    pub desktop_home: Option<String>,
+    pub desktop_runtime_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -350,6 +357,9 @@ pub struct SessionRecord {
     #[serde(default)]
     pub capabilities: Vec<String>,
     pub browser_command: Option<String>,
+    pub desktop_user: Option<String>,
+    pub desktop_home: Option<String>,
+    pub desktop_runtime_dir: Option<String>,
     pub runtime_base_url: Option<String>,
     pub viewer_url: Option<String>,
     pub live_desktop_view: Option<LiveDesktopView>,

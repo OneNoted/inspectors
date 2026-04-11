@@ -41,6 +41,9 @@ Optional QEMU fields:
 - `shared_host_path`: host path mounted into the guest via `/shared/hostshare`
 - `boot`: optional explicit boot override for low-level/debug sessions
 - `container_image`: optional explicit `qemux/qemu` image override
+- `desktop_user`: optional default user for GUI-sensitive display actions
+- `desktop_home`: optional home directory paired with `desktop_user`
+- `desktop_runtime_dir`: optional runtime dir paired with `desktop_user`
 
 ### `GET /api/sessions/:id`
 Return session metadata and whether the browser adapter is attached.
@@ -52,6 +55,9 @@ QEMU sessions may include:
 - `bridge_status`
 - `readiness_state`
 - `qemu_profile`
+- `desktop_user`
+- `desktop_home`
+- `desktop_runtime_dir`
 
 ### `DELETE /api/sessions/:id`
 Stop the session and clean up child processes/containers.
@@ -82,6 +88,21 @@ Return runtime capabilities plus browser-adapter availability details.
 
 ### `POST /api/sessions/:id/actions`
 Run one action. Returns an `ActionReceipt` or a structured error.
+
+Desktop-sensitive action notes:
+- `open_app` accepts optional `run_as_user`
+- `run_command` accepts optional `run_as_user`
+- `run_as_user: "desktop"` resolves to the session's configured desktop user when available
+
+Example GUI-safe Taskers launch in a qemu `product` guest:
+
+```json
+{
+  "kind": "run_command",
+  "command": "LIBGL_ALWAYS_SOFTWARE=1 GDK_BACKEND=x11 nohup /home/ubuntu/taskers-bundle/bin/taskers >/tmp/taskers.log 2>&1 &",
+  "run_as_user": "desktop"
+}
+```
 
 ### `POST /api/tasks`
 Create a task bound to a session.

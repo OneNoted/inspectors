@@ -194,13 +194,25 @@ export function toGuestAction(action: ActionRequest): JsonObject {
     case 'scroll':
       return { kind: action.kind, delta_x: action.delta_x, delta_y: action.delta_y, task_id: taskId ?? null };
     case 'open_app':
-      return { kind: action.kind, name: action.name, task_id: taskId ?? null };
+      return {
+        kind: action.kind,
+        name: action.name,
+        run_as_user: action.run_as_user ?? null,
+        task_id: taskId ?? null,
+      };
     case 'focus_window':
       return { kind: action.kind, window_id: action.window_id, task_id: taskId ?? null };
     case 'resize_window':
       return { kind: action.kind, window_id: action.window_id, bounds: action.bounds, task_id: taskId ?? null };
     case 'run_command':
-      return { kind: action.kind, command: action.command, cwd: action.cwd ?? null, env: action.env ?? null, task_id: taskId ?? null };
+      return {
+        kind: action.kind,
+        command: action.command,
+        cwd: action.cwd ?? null,
+        env: action.env ?? null,
+        run_as_user: action.run_as_user ?? null,
+        task_id: taskId ?? null,
+      };
     case 'read_file':
       return { kind: action.kind, path: action.path, task_id: taskId ?? null };
     case 'write_file':

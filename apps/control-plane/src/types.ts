@@ -19,10 +19,10 @@ export type ActionRequest =
   | { kind: 'type_text'; text: string; taskId?: string }
   | { kind: 'hotkey'; keys: string[]; taskId?: string }
   | { kind: 'scroll'; delta_x: number; delta_y: number; taskId?: string }
-  | { kind: 'open_app'; name: string; taskId?: string }
+  | { kind: 'open_app'; name: string; run_as_user?: string; taskId?: string }
   | { kind: 'focus_window'; window_id: string; taskId?: string }
   | { kind: 'resize_window'; window_id: string; bounds: { x: number; y: number; width: number; height: number }; taskId?: string }
-  | { kind: 'run_command'; command: string; cwd?: string; env?: Record<string, string>; taskId?: string }
+  | { kind: 'run_command'; command: string; cwd?: string; env?: Record<string, string>; run_as_user?: string; taskId?: string }
   | { kind: 'read_file'; path: string; taskId?: string }
   | { kind: 'write_file'; path: string; contents: string; taskId?: string }
   | { kind: 'browser_open'; url: string; taskId?: string }
@@ -62,6 +62,9 @@ export interface SessionRecord {
   artifacts_dir: string;
   capabilities: string[];
   browser_command?: string | null;
+  desktop_user?: string | null;
+  desktop_home?: string | null;
+  desktop_runtime_dir?: string | null;
   runtime_base_url?: string | null;
   viewer_url?: string | null;
   live_desktop_view?: LiveDesktopView | null;

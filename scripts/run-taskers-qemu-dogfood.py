@@ -19,7 +19,7 @@ SHARED_HOST_PATH = os.environ.get(
 )
 TASKERS_BUNDLE = os.environ.get(
     "ACU_TASKERS_BUNDLE",
-    "/mnt/shared/hostshare/dist/taskers-linux-bundle-v0.3.1-x86_64-unknown-linux-gnu.tar.xz",
+    "/mnt/shared/hostshare/dist/taskers-linux-bundle-v0.6.0-x86_64-unknown-linux-gnu.tar.xz",
 )
 
 client = ComputerUseClient(base_url=BASE_URL)
@@ -84,52 +84,80 @@ task = client.create_task(
 task_id = task["id"]
 
 setup_cmd = f"""set -e
-mkdir -p /mnt/shared "$HOME/taskers-bundle"
+install -d -o ubuntu -g ubuntu /home/ubuntu/taskers-bundle
 mountpoint -q /mnt/shared || sudo mount -t 9p -o trans=virtio shared /mnt/shared
 test -f "{TASKERS_BUNDLE}"
-rm -rf "$HOME/taskers-bundle"/*
-tar -xJf "{TASKERS_BUNDLE}" -C "$HOME/taskers-bundle"
-WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 DISPLAY=:0 "$HOME/taskers-bundle/bin/taskers" >/tmp/taskers.log 2>&1 &
-sleep 5
-"$HOME/taskers-bundle/bin/taskersctl" query tree > /tmp/taskers-before.json
+rm -rf /home/ubuntu/taskers-bundle/*
+tar -xJf "{TASKERS_BUNDLE}" -C /home/ubuntu/taskers-bundle
+chown -R ubuntu:ubuntu /home/ubuntu/taskers-bundle
 """
 setup_receipt = client.perform_action(
     session_id,
     {"kind": "run_command", "command": setup_cmd, "taskId": task_id},
+)
+launch_receipt = client.perform_action(
+    session_id,
+    {
+        "kind": "run_command",
+        "command": (
+            "LIBGL_ALWAYS_SOFTWARE=1 "
+            "MESA_LOADER_DRIVER_OVERRIDE=llvmpipe "
+            "GDK_BACKEND=x11 "
+            "XDG_SESSION_TYPE=x11 "
+            "GTK_USE_PORTAL=0 "
+            "NO_AT_BRIDGE=1 "
+            "WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 "
+            "nohup /home/ubuntu/taskers-bundle/bin/taskers >/tmp/taskers.log 2>&1 &"
+        ),
+        "run_as_user": "desktop",
+        "taskId": task_id,
+    },
+)
+time.sleep(8)
+before_tree_receipt = client.perform_action(
+    session_id,
+    {
+        "kind": "run_command",
+        "command": '/home/ubuntu/taskers-bundle/bin/taskersctl query tree > /tmp/taskers-before.json',
+        "run_as_user": "desktop",
+        "taskId": task_id,
+    },
+)
+before_tree = client.perform_action(
+    session_id,
+    {"kind": "read_file", "path": "/tmp/taskers-before.json", "taskId": task_id},
 )
 
 artifacts_dir = Path("artifacts")
 artifacts_dir.mkdir(exist_ok=True)
 before_screenshot = fetch_screenshot(session_id, artifacts_dir / "taskers-qemu-before.png")
 
-# Visible GUI interaction: click the Taskers icon in the centered bottom dock.
-click_receipt = client.perform_action(
-    session_id,
-    {"kind": "mouse_click", "x": 648, "y": 694, "button": "left", "taskId": task_id},
-)
-time.sleep(2)
-
 workspace_cmd = (
-    '"$HOME/taskers-bundle/bin/taskersctl" workspace new --label "Workspace 2" '
-    '&& "$HOME/taskers-bundle/bin/taskersctl" query tree > /tmp/taskers-after.json'
+    '/home/ubuntu/taskers-bundle/bin/taskersctl workspace new --label "Workspace 2" '
+    '&& /home/ubuntu/taskers-bundle/bin/taskersctl query tree > /tmp/taskers-after.json'
 )
 workspace_receipt = client.perform_action(
     session_id,
-    {"kind": "run_command", "command": workspace_cmd, "taskId": task_id},
+    {
+        "kind": "run_command",
+        "command": workspace_cmd,
+        "run_as_user": "desktop",
+        "taskId": task_id,
+    },
 )
 after_tree = client.perform_action(
     session_id,
     {"kind": "read_file", "path": "/tmp/taskers-after.json", "taskId": task_id},
 )
-before_tree = client.perform_action(
-    session_id,
-    {"kind": "read_file", "path": "/tmp/taskers-before.json", "taskId": task_id},
-)
 time.sleep(2)
 after_screenshot = fetch_screenshot(session_id, artifacts_dir / "taskers-qemu-after.png")
 log_receipt = client.perform_action(
     session_id,
-    {"kind": "read_file", "path": "/tmp/taskers.log", "taskId": task_id},
+    {
+        "kind": "run_command",
+        "command": "ps -ef | grep -i taskers | grep -v grep",
+        "taskId": task_id,
+    },
 )
 
 before_payload = json.loads((before_tree.get("result") or {}).get("contents") or "{}")
@@ -153,11 +181,12 @@ result = {
     "live_view_probe": live_view_probe,
     "task": task,
     "setup_receipt": setup_receipt,
-    "click_receipt": click_receipt,
-    "workspace_receipt": workspace_receipt,
+    "launch_receipt": launch_receipt,
+    "before_tree_receipt": before_tree_receipt,
     "before_tree": before_tree,
+    "workspace_receipt": workspace_receipt,
     "after_tree": after_tree,
-    "taskers_log": log_receipt,
+    "taskers_processes": log_receipt,
     "artifacts": {
         "before_screenshot": before_screenshot,
         "after_screenshot": after_screenshot,

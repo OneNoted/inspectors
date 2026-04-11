@@ -81,7 +81,8 @@ xmessage_receipt = client.perform_action(
     session_id,
     {
         "kind": "run_command",
-        "command": 'DISPLAY=:0 nohup xmessage -center "Live desktop demo" >/tmp/qemu-live-view-demo.out 2>/tmp/qemu-live-view-demo.err </dev/null &',
+        "command": 'nohup xmessage -center "Live desktop demo" >/tmp/qemu-live-view-demo.out 2>/tmp/qemu-live-view-demo.err </dev/null &',
+        "run_as_user": "desktop",
         "taskId": task_id,
     },
 )

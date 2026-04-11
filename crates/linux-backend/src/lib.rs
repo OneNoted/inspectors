@@ -1,4 +1,5 @@
 #![allow(clippy::result_large_err)]
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -12,12 +13,16 @@ use serde_json::{Value, json};
 use tokio::fs;
 use tokio::process::Command;
 
+const POSIX_SHELL: &str = "/bin/sh";
+
 #[derive(Debug, Clone)]
 pub struct BackendOptions {
     pub display: String,
     pub artifacts_dir: PathBuf,
     pub browser_command: String,
     pub session_env: Vec<(String, String)>,
+    pub default_user: Option<String>,
+    pub default_user_home: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -42,6 +47,23 @@ impl LinuxBackend {
         &self.options.browser_command
     }
 
+    fn screenshot_command(&self) -> Result<(&'static str, Vec<String>), StructuredError> {
+        if Self::tool_exists("import") {
+            return Ok(("import", vec!["-window".to_string(), "root".to_string()]));
+        }
+        if Self::tool_exists("magick") {
+            return Ok((
+                "magick",
+                vec![
+                    "import".to_string(),
+                    "-window".to_string(),
+                    "root".to_string(),
+                ],
+            ));
+        }
+        Err(self.missing_tool("import"))
+    }
+
     fn apply_display_env(&self, command: &mut Command) {
         command.env("DISPLAY", &self.options.display);
         for (key, value) in &self.options.session_env {
@@ -49,12 +71,19 @@ impl LinuxBackend {
         }
     }
 
+    fn resolve_target_user(&self, requested: Option<&str>) -> Option<String> {
+        match requested {
+            Some("desktop") => self.options.default_user.clone(),
+            Some(user) if !user.is_empty() => Some(user.to_string()),
+            _ => None,
+        }
+    }
+
     pub fn capabilities(&self) -> Vec<String> {
-        let mut caps = vec![
-            "screenshot".to_string(),
-            "shell".to_string(),
-            "filesystem".to_string(),
-        ];
+        let mut caps = vec!["shell".to_string(), "filesystem".to_string()];
+        if Self::tool_exists("import") || Self::tool_exists("magick") {
+            caps.push("screenshot".to_string());
+        }
         if Self::tool_exists("xdotool") {
             caps.extend([
                 "mouse".to_string(),
@@ -193,8 +222,17 @@ impl LinuxBackend {
                     vec![],
                 ))
             }
-            ActionRequest::OpenApp { name, .. } => {
-                self.run_shell_background(&name).await?;
+            ActionRequest::OpenApp {
+                name, run_as_user, ..
+            } => {
+                self.run_shell_background(
+                    &name,
+                    self.resolve_target_user(run_as_user.as_deref())
+                        .as_deref()
+                        .or(self.options.default_user.as_deref()),
+                    None,
+                )
+                .await?;
                 Ok((json!({"command": name}), vec![]))
             }
             ActionRequest::FocusWindow { window_id, .. } => {
@@ -221,20 +259,19 @@ impl LinuxBackend {
                 Ok((json!({"window_id": window_id, "bounds": bounds}), vec![]))
             }
             ActionRequest::RunCommand {
-                command, cwd, env, ..
+                command,
+                cwd,
+                env,
+                run_as_user,
+                ..
             } => {
-                let mut cmd = Command::new("sh");
-                cmd.arg("-lc").arg(&command);
-                cmd.env("DISPLAY", &self.options.display);
-                if let Some(cwd) = cwd.as_ref() {
-                    cmd.current_dir(cwd);
-                }
-                if let Some(env_map) = env {
-                    for (key, value) in env_map {
-                        cmd.env(key, value);
-                    }
-                }
-                let output = cmd
+                let output = self
+                    .run_shell_capture(
+                        &command,
+                        cwd.as_deref(),
+                        env.as_ref(),
+                        self.resolve_target_user(run_as_user.as_deref()).as_deref(),
+                    )?
                     .output()
                     .await
                     .map_err(|error| self.io_error(error.to_string()))?;
@@ -269,10 +306,11 @@ impl LinuxBackend {
             }
             ActionRequest::BrowserOpen { url, .. } => {
                 let escaped = url.replace('"', "\\\"").replace('\'', "'\\''");
-                self.run_shell_background(&format!(
-                    "{} '{}'",
-                    self.options.browser_command, escaped
-                ))
+                self.run_shell_background(
+                    &format!("{} '{}'", self.options.browser_command, escaped),
+                    self.options.default_user.as_deref(),
+                    None,
+                )
                 .await?;
                 Ok((json!({"url": url, "mode": "desktop_fallback"}), vec![]))
             }
@@ -286,7 +324,7 @@ impl LinuxBackend {
     }
 
     async fn capture_screenshot(&self) -> Result<ScreenshotData, StructuredError> {
-        self.ensure_tool("import")?;
+        let (binary, mut args) = self.screenshot_command()?;
         fs::create_dir_all(&self.options.artifacts_dir)
             .await
             .map_err(|error| self.io_error(error.to_string()))?;
@@ -294,22 +332,18 @@ impl LinuxBackend {
             .options
             .artifacts_dir
             .join(format!("screenshot-{}.png", Utc::now().timestamp_millis()));
-        let mut command = Command::new("import");
-        command.args([
-            "-window",
-            "root",
-            screenshot_path.to_string_lossy().as_ref(),
-        ]);
+        args.push(screenshot_path.to_string_lossy().to_string());
+        let mut command = Command::new(binary);
+        command.args(&args);
         self.apply_display_env(&mut command);
         let output = command
             .output()
             .await
             .map_err(|error| self.io_error(error.to_string()))?;
         if !output.status.success() {
-            return Err(self.command_error(
-                "import",
-                String::from_utf8_lossy(&output.stderr).into_owned(),
-            ));
+            return Err(
+                self.command_error(binary, String::from_utf8_lossy(&output.stderr).into_owned())
+            );
         }
         let data = fs::read(&screenshot_path)
             .await
@@ -393,18 +427,82 @@ impl LinuxBackend {
         }
     }
 
-    async fn run_shell_background(&self, command: &str) -> Result<(), StructuredError> {
-        let mut child = Command::new("sh");
-        child
-            .arg("-lc")
-            .arg(format!("{} >/dev/null 2>&1 &", command))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        self.apply_display_env(&mut child);
+    fn build_shell_command(
+        &self,
+        command: &str,
+        extra_env: Option<&BTreeMap<String, String>>,
+        target_user: Option<&str>,
+    ) -> Result<Command, StructuredError> {
+        let Some(target_user) = target_user else {
+            let mut child = Command::new(POSIX_SHELL);
+            child.arg("-lc").arg(command);
+            self.apply_display_env(&mut child);
+            if let Some(env_map) = extra_env {
+                for (key, value) in env_map {
+                    child.env(key, value);
+                }
+            }
+            return Ok(child);
+        };
+
+        let (binary, base_args): (&str, &[&str]) = if Self::tool_exists("sudo") {
+            ("sudo", &["-H", "-u", target_user, "env"])
+        } else if Self::tool_exists("runuser") {
+            ("runuser", &["-u", target_user, "--", "env"])
+        } else {
+            return Err(self.missing_tool("sudo"));
+        };
+
+        let mut child = Command::new(binary);
+        child.args(base_args);
+        child.arg(format!("DISPLAY={}", self.options.display));
+        for (key, value) in &self.options.session_env {
+            child.arg(format!("{key}={value}"));
+        }
+        if self.options.default_user.as_deref() == Some(target_user)
+            && let Some(home) = self.options.default_user_home.as_deref()
+        {
+            child.arg(format!("HOME={home}"));
+        }
+        if let Some(env_map) = extra_env {
+            for (key, value) in env_map {
+                child.arg(format!("{key}={value}"));
+            }
+        }
+        child.arg(POSIX_SHELL).arg("-lc").arg(command);
+        Ok(child)
+    }
+
+    async fn run_shell_background(
+        &self,
+        command: &str,
+        target_user: Option<&str>,
+        extra_env: Option<&BTreeMap<String, String>>,
+    ) -> Result<(), StructuredError> {
+        let mut child = self.build_shell_command(
+            &format!("nohup {command} >/dev/null 2>&1 &"),
+            extra_env,
+            target_user,
+        )?;
+        child.stdout(Stdio::null()).stderr(Stdio::null());
         child
             .spawn()
             .map_err(|error| self.io_error(error.to_string()))?;
         Ok(())
+    }
+
+    fn run_shell_capture(
+        &self,
+        command: &str,
+        cwd: Option<&str>,
+        extra_env: Option<&BTreeMap<String, String>>,
+        target_user: Option<&str>,
+    ) -> Result<Command, StructuredError> {
+        let mut command = self.build_shell_command(command, extra_env, target_user)?;
+        if let Some(cwd) = cwd {
+            command.current_dir(cwd);
+        }
+        Ok(command)
     }
 
     async fn run_command_capture<I, S>(
@@ -443,7 +541,7 @@ impl LinuxBackend {
     }
 
     pub fn tool_exists(tool: &str) -> bool {
-        std::process::Command::new("sh")
+        std::process::Command::new(POSIX_SHELL)
             .arg("-lc")
             .arg(format!("command -v {} >/dev/null 2>&1", tool))
             .status()
@@ -507,7 +605,39 @@ mod tests {
             artifacts_dir: PathBuf::from("artifacts/test"),
             browser_command: "firefox".to_string(),
             session_env: vec![],
+            default_user: None,
+            default_user_home: None,
         });
         assert!(backend.capabilities().contains(&"shell".to_string()));
+    }
+
+    #[tokio::test]
+    async fn run_command_inherits_session_env() {
+        let backend = LinuxBackend::new(BackendOptions {
+            display: ":42".to_string(),
+            artifacts_dir: PathBuf::from("artifacts/test"),
+            browser_command: "firefox".to_string(),
+            session_env: vec![("XAUTHORITY".to_string(), "/tmp/fake-xauth".to_string())],
+            default_user: None,
+            default_user_home: None,
+        });
+        let receipt = backend
+            .perform_action(ActionRequest::RunCommand {
+                command: "printf '%s|%s' \"$DISPLAY\" \"$XAUTHORITY\"".to_string(),
+                cwd: None,
+                env: None,
+                run_as_user: None,
+                task_id: None,
+            })
+            .await;
+        assert_eq!(receipt.status, "ok");
+        assert_eq!(
+            receipt.result,
+            json!({
+                "stdout": ":42|/tmp/fake-xauth",
+                "stderr": "",
+                "exit_code": 0,
+            })
+        );
     }
 }
