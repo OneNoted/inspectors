@@ -10,6 +10,8 @@ build/
 .next/
 output/
 target/
+result
+result-*
 artifacts/
 .sessions/
 .tmp/
