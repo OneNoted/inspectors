@@ -23,6 +23,8 @@
           ".playwright-cli"
           ".tmp"
           "artifacts"
+          "flake.lock"
+          "flake.nix"
           "node_modules"
           "output"
           "target"
