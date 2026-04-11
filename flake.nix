@@ -19,6 +19,7 @@
         && !(lib.elem name [
           ".jj"
           ".omx"
+          ".private"
           ".nix-root"
           ".playwright-cli"
           ".tmp"
@@ -28,7 +29,8 @@
           "node_modules"
           "output"
           "target"
-        ]);
+        ])
+        && !(lib.hasPrefix "result" name);
       src = lib.cleanSourceWith {
         src = ./.;
         filter = sourceFilter;
