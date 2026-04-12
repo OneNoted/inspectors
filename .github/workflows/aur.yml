@@ -82,8 +82,9 @@ jobs:
           ssh-private-key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
       - name: Trust the AUR host key
         run: |
-          mkdir -p ~/.ssh
-          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
+          mkdir -p "$HOME/.ssh" /github/home/.ssh
+          ssh-keyscan aur.archlinux.org | tee -a "$HOME/.ssh/known_hosts" >> /github/home/.ssh/known_hosts
+          chmod 600 "$HOME/.ssh/known_hosts" /github/home/.ssh/known_hosts
       - name: Publish inspectors-desktop-git
         run: ./scripts/publish-aur-package.sh inspectors-desktop-git ssh://aur@aur.archlinux.org/inspectors-desktop-git.git
 
@@ -113,7 +114,8 @@ jobs:
           ssh-private-key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
       - name: Trust the AUR host key
         run: |
-          mkdir -p ~/.ssh
-          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
+          mkdir -p "$HOME/.ssh" /github/home/.ssh
+          ssh-keyscan aur.archlinux.org | tee -a "$HOME/.ssh/known_hosts" >> /github/home/.ssh/known_hosts
+          chmod 600 "$HOME/.ssh/known_hosts" /github/home/.ssh/known_hosts
       - name: Publish inspectors-desktop
         run: ./scripts/publish-aur-package.sh inspectors-desktop ssh://aur@aur.archlinux.org/inspectors-desktop.git
