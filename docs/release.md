@@ -1,6 +1,6 @@
 # Release checklist
 
-This repository is still source-first overall, but the Rust workspace is staged for an initial `0.1.0-alpha.1` crates.io release candidate.
+This repository is still source-first overall, but the Rust workspace is staged for an initial `0.1.0-alpha.2` crates.io release candidate.
 
 ## Verified locally
 

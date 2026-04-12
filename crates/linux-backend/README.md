@@ -6,7 +6,7 @@
 
 ```toml
 [dependencies]
-linux-backend = "0.1.0-alpha.1"
+linux-backend = "0.1.0-alpha.2"
 ```
 
 It builds on `desktop-core` for the shared runtime contract. See the workspace [`README.md`](../../README.md) for the broader product/runtime context.

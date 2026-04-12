@@ -7,8 +7,6 @@ const desktopPanelTitle = document.getElementById('desktop-panel-title');
 const liveViewBadge = document.getElementById('live-view-badge');
 const liveViewTrust = document.getElementById('live-view-trust');
 const desktopPlaceholder = document.getElementById('desktop-placeholder');
-const desktopHistoryPanel = document.getElementById('desktop-history-panel');
-const desktopHistoryStrip = document.getElementById('desktop-history-strip');
 const viewerFrame = document.getElementById('viewer-frame');
 const viewerLink = document.getElementById('viewer-link');
 const observation = document.getElementById('observation');
@@ -26,8 +24,6 @@ const sessionSummary = document.getElementById('session-summary');
 let sessionId = null;
 let taskId = null;
 let liveViewUrl = null;
-let screenshotHistory = [];
-let screenshotHistorySessionId = null;
 
 async function json(url, options) {
   const res = await fetch(url, { headers: { 'content-type': 'application/json' }, ...options });
@@ -61,78 +57,11 @@ function resetDesktopState(message = 'Live desktop unavailable') {
   viewerLink.hidden = true;
   desktopImage.hidden = true;
   desktopImage.removeAttribute('src');
-  clearScreenshotHistory();
   desktopPlaceholder.hidden = false;
   desktopPlaceholder.textContent = message;
   desktopPanelTitle.textContent = 'Live desktop view';
   liveViewBadge.textContent = 'Unavailable';
   liveViewTrust.textContent = 'No session selected.';
-}
-
-function clearScreenshotHistory() {
-  const previousMainUrl = desktopImage.dataset.objectUrl;
-  if (previousMainUrl) {
-    URL.revokeObjectURL(previousMainUrl);
-    delete desktopImage.dataset.objectUrl;
-  }
-  screenshotHistory.forEach((entry) => URL.revokeObjectURL(entry.url));
-  screenshotHistory = [];
-  screenshotHistorySessionId = null;
-  if (desktopHistoryStrip) {
-    desktopHistoryStrip.replaceChildren();
-  }
-  if (desktopHistoryPanel) {
-    desktopHistoryPanel.hidden = true;
-  }
-}
-
-function renderScreenshotHistory() {
-  if (!desktopHistoryStrip || !desktopHistoryPanel) return;
-  desktopHistoryStrip.replaceChildren();
-  for (const entry of screenshotHistory) {
-    const card = document.createElement('article');
-    card.className = 'desktop-history-entry';
-
-    const image = document.createElement('img');
-    image.src = entry.url;
-    image.alt = `Fallback screenshot captured ${entry.label}`;
-
-    const label = document.createElement('span');
-    label.textContent = entry.label;
-
-    card.append(image, label);
-    desktopHistoryStrip.append(card);
-  }
-  desktopHistoryPanel.hidden = screenshotHistory.length === 0;
-}
-
-async function refreshScreenshotHistory(liveView, currentSessionId) {
-  const screenshotUrl = buildScreenshotUrl(liveView);
-  if (!screenshotUrl) return;
-  if (screenshotHistorySessionId !== currentSessionId) {
-    clearScreenshotHistory();
-    screenshotHistorySessionId = currentSessionId;
-  }
-
-  const response = await fetch(screenshotUrl);
-  if (!response.ok) {
-    throw new Error(`screenshot request failed: ${response.status} ${response.statusText}`);
-  }
-  const blob = await response.blob();
-  const mainUrl = URL.createObjectURL(blob);
-  const historyUrl = URL.createObjectURL(blob);
-  const previousMainUrl = desktopImage.dataset.objectUrl;
-  if (previousMainUrl) URL.revokeObjectURL(previousMainUrl);
-  desktopImage.dataset.objectUrl = mainUrl;
-  desktopImage.src = mainUrl;
-  const previousEntries = screenshotHistory;
-  screenshotHistory.unshift({
-    url: historyUrl,
-    label: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-  });
-  screenshotHistory = screenshotHistory.slice(0, 6);
-  previousEntries.slice(5).forEach((entry) => URL.revokeObjectURL(entry.url));
-  renderScreenshotHistory();
 }
 
 function sessionOptionLabel(session) {
@@ -189,7 +118,7 @@ function summarizeSession(session) {
   sessionSummary.textContent = parts.join(' · ');
 }
 
-async function updateLiveView(session, observation) {
+function updateLiveView(session, observation) {
   const liveView = getLiveDesktopView(session);
   const description = describeLiveDesktopView(session, observation);
   desktopPanelTitle.textContent = description.title;
@@ -213,9 +142,8 @@ async function updateLiveView(session, observation) {
   }
 
   if (description.showImage && liveView.mode === 'screenshot_poll') {
-    await refreshScreenshotHistory(liveView, session.id);
-  } else {
-    clearScreenshotHistory();
+    const screenshotUrl = buildScreenshotUrl(liveView);
+    if (screenshotUrl) desktopImage.src = screenshotUrl;
   }
 
   if (liveView.debug_url) {
@@ -235,14 +163,14 @@ async function refresh() {
     const session = sessionPayload.session ?? sessionPayload;
     summarizeSession(session);
     sessionMeta.textContent = JSON.stringify(sessionPayload, null, 2);
-    await updateLiveView(session, null);
+    updateLiveView(session, null);
     syncSessionLocation();
 
     try {
       const obs = await json(`/api/sessions/${sessionId}/observation`);
       observation.textContent = JSON.stringify(obs.summary ?? obs, null, 2);
       historyEl.textContent = JSON.stringify(obs.action_history ?? [], null, 2);
-      await updateLiveView(session, obs);
+      updateLiveView(session, obs);
     } catch (error) {
       observation.textContent = JSON.stringify({ error: String(error) }, null, 2);
       historyEl.textContent = '[]';

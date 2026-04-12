@@ -1,14 +1,18 @@
 import { createServer } from 'node:http';
 import { mkdir, stat } from 'node:fs/promises';
 import { createReadStream, existsSync } from 'node:fs';
-import { execFile, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { connect as connectSocket } from 'node:net';
 import { dirname, extname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { chromium, firefox } from 'playwright-core';
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(__dirname, '../../..');
+const uiRoot = join(repoRoot, 'apps', 'web-ui', 'public');
+const artifactRoot = join(repoRoot, 'artifacts');
 const defaultGuestRuntimeUrl = process.env.GUEST_RUNTIME_URL ?? 'http://127.0.0.1:4001';
 const playwrightEnabled = process.env.ACU_ENABLE_PLAYWRIGHT === '1';
 const execFileAsync = promisify(execFile);
@@ -17,58 +21,6 @@ const browserBackendPreference = process.env.ACU_BROWSER_BACKEND ?? 'remote-cdp'
 const browserDockerImage = process.env.ACU_BROWSER_DOCKER_IMAGE ?? 'chromedp/headless-shell';
 const browserDockerName = process.env.ACU_BROWSER_DOCKER_NAME ?? 'acu-browser-cdp';
 const screenshotPollIntervalMs = 3000;
-let playwrightModulePromise = null;
-function controlPlaneRoot() {
-    return process.env.ACU_CONTROL_PLANE_ROOT
-        ? resolve(process.env.ACU_CONTROL_PLANE_ROOT)
-        : resolve(__dirname, '../../..');
-}
-function uiRoot() {
-    return process.env.ACU_UI_ROOT
-        ? resolve(process.env.ACU_UI_ROOT)
-        : join(controlPlaneRoot(), 'apps', 'web-ui', 'public');
-}
-function artifactRoot() {
-    return process.env.ACU_ARTIFACT_ROOT
-        ? resolve(process.env.ACU_ARTIFACT_ROOT)
-        : join(controlPlaneRoot(), 'artifacts');
-}
-function resolveControlPlaneOptions(options = {}) {
-    return {
-        uiRoot: options.uiRoot ? resolve(options.uiRoot) : uiRoot(),
-        artifactRoot: options.artifactRoot ? resolve(options.artifactRoot) : artifactRoot(),
-        desktopActivateBin: options.desktopActivateBin ?? process.env.ACU_DESKTOP_ACTIVATE_BIN ?? null,
-        desktopActivateArgs: options.desktopActivateArgs ?? parseDesktopActivateArgs(process.env.ACU_DESKTOP_ACTIVATE_ARGS_JSON),
-    };
-}
-function parseDesktopActivateArgs(raw) {
-    if (!raw)
-        return [];
-    try {
-        const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed.map((entry) => String(entry)) : [];
-    }
-    catch {
-        return [];
-    }
-}
-async function loadPlaywright() {
-    playwrightModulePromise ??= import('playwright-core');
-    return playwrightModulePromise;
-}
-function shouldAutoActivateDesktop(session) {
-    return session.provider === 'qemu' && session.qemu_profile !== 'regression';
-}
-function maybeAutoActivateDesktop(state, session) {
-    if (!state.options.desktopActivateBin || !shouldAutoActivateDesktop(session))
-        return;
-    const child = spawn(state.options.desktopActivateBin, [...state.options.desktopActivateArgs, '--activate-desktop', '--session', session.id], {
-        detached: true,
-        stdio: 'ignore',
-        env: { ...process.env, ACU_DESKTOP_ACTIVATE_SOURCE: 'control-plane' },
-    });
-    child.unref();
-}
 function buildScreenshotPath(sessionId) {
     return `/api/sessions/${sessionId}/screenshot`;
 }
@@ -341,7 +293,6 @@ async function ensureBrowser(state, sessionId) {
     const existing = state.browserStates.get(sessionId);
     if (existing)
         return existing;
-    const { chromium, firefox } = await loadPlaywright();
     if (browserBackendPreference === 'remote-cdp') {
         const cdpUrl = await ensureRemoteChromium();
         const browser = await chromium.connectOverCDP(cdpUrl);
@@ -561,7 +512,7 @@ async function handleBrowserAction(state, sessionId, action) {
             }
             break;
         case 'browser_screenshot': {
-            const path = join(state.options.artifactRoot, `${sessionId}-${Date.now()}-browser.png`);
+            const path = join(artifactRoot, `${sessionId}-${Date.now()}-browser.png`);
             await mkdir(dirname(path), { recursive: true });
             await browser.page.screenshot({ path, fullPage: true });
             result = { path };
@@ -583,14 +534,13 @@ async function handleBrowserAction(state, sessionId, action) {
     attachReceiptToTask(state, action.taskId, receipt);
     return receipt;
 }
-async function serveStatic(state, req, res) {
+async function serveStatic(req, res) {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     if (!['GET', 'HEAD'].includes(req.method ?? 'GET'))
         return false;
     const relativePath = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
-    const staticRoot = state.options.uiRoot;
-    const filePath = resolve(staticRoot, relativePath);
-    if (!filePath.startsWith(staticRoot) || !existsSync(filePath))
+    const filePath = resolve(uiRoot, relativePath);
+    if (!filePath.startsWith(uiRoot) || !existsSync(filePath))
         return false;
     const info = await stat(filePath);
     const contentType = extname(filePath) === '.html'
@@ -614,7 +564,7 @@ async function serveStatic(state, req, res) {
 export function createRequestHandler(state) {
     return async (req, res) => {
         try {
-            if (await serveStatic(state, req, res))
+            if (await serveStatic(req, res))
                 return;
             const url = new URL(req.url ?? '/', 'http://127.0.0.1');
             if (req.method === 'GET' && url.pathname === '/api/health') {
@@ -653,7 +603,6 @@ export function createRequestHandler(state) {
                 });
                 if (upstream.status === 201 && upstream.payload?.session) {
                     upstream.payload.session = withLiveDesktopView(upstream.payload.session);
-                    maybeAutoActivateDesktop(state, upstream.payload.session);
                 }
                 json(res, upstream.status, upstream.payload);
                 return;
@@ -912,16 +861,14 @@ async function handleLiveViewUpgrade(state, req, socket, head) {
     });
     socket.on('error', () => upstreamSocket.destroy());
 }
-export async function startControlPlaneServer(port = Number(process.env.PORT ?? 3000), guestRuntimeUrl = defaultGuestRuntimeUrl, options = {}) {
-    const resolvedOptions = resolveControlPlaneOptions(options);
-    await mkdir(resolvedOptions.artifactRoot, { recursive: true });
+export async function startControlPlaneServer(port = Number(process.env.PORT ?? 3000), guestRuntimeUrl = defaultGuestRuntimeUrl) {
+    await mkdir(artifactRoot, { recursive: true });
     const state = {
         guestRuntimeUrl,
         tasks: new Map(),
         actionHistory: new Map(),
         browserStates: new Map(),
         browserSnapshots: new Map(),
-        options: resolvedOptions,
     };
     const handler = createRequestHandler(state);
     const server = createServer((req, res) => void handler(req, res));

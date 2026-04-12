@@ -1,6 +1,6 @@
 pkgname=inspectors-desktop
-_tag=v0.1.0-alpha.1
-pkgver=0.1.0alpha1
+_tag=v0.1.0-alpha.2
+pkgver=0.1.0alpha2
 pkgrel=1
 pkgdesc='Linux-first Tauri operator app for the Agent Computer Use Platform'
 arch=('x86_64' 'aarch64')

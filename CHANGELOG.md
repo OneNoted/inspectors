@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0-alpha.2 - 2026-04-12
+
+Fix the published desktop package so the AUR release builds the restored `desktop-app` crate again.
+
+### Fixes
+- Restore the Tauri desktop app crate, packaged assets, and resource sync script to the workspace.
+- Re-enable workspace build/test lanes that prepare the desktop app resources before Rust builds.
+- Publish a replacement release tag so the stable AUR package targets a buildable source archive.
+
 ## 0.1.0-alpha.1 - 2026-04-10
 
 Initial public alpha release candidate for the repository and Rust workspace crates.

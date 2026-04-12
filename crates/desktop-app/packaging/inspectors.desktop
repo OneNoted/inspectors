@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=inspectors
+Comment=Agent Computer Use desktop operator app
+Exec=inspectors-desktop
+Icon=inspectors
+Terminal=false
+Categories=Development;Utility;
+StartupNotify=true
