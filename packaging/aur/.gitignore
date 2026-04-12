@@ -1,0 +1,7 @@
+*/pkg/
+*/src/
+*/inspectors-desktop-git/
+*/inspectors-desktop-*.tar.gz
+*/inspectors-desktop-git-*.tar.gz
+*.pkg.tar.*
+*.src.tar.*
