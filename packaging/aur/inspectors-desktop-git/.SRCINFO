@@ -2,6 +2,7 @@ pkgbase = inspectors-desktop-git
 	pkgdesc = Linux-first Tauri operator app for the Agent Computer Use Platform
 	pkgver = 0.0.0.r0.g0000000
 	pkgrel = 1
+	epoch = 1
 	url = https://github.com/OneNoted/inspectors
 	arch = x86_64
 	arch = aarch64
