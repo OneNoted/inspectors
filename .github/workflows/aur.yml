@@ -19,6 +19,11 @@ on:
         required: false
         default: false
         type: boolean
+      publish_bin:
+        description: Publish inspectors-desktop-bin to AUR
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -121,3 +126,35 @@ jobs:
           chmod 600 "$HOME/.ssh/known_hosts" /github/home/.ssh/known_hosts
       - name: Publish inspectors-desktop
         run: ./scripts/publish-aur-package.sh inspectors-desktop ssh://aur@aur.archlinux.org/inspectors-desktop.git
+
+  publish-bin:
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.publish_bin
+    needs: validate
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    env:
+      AUR_BUILDER_USER: aurbuilder
+      GIT_SSH_COMMAND: ssh -o UserKnownHostsFile=/github/home/.ssh/known_hosts -o StrictHostKeyChecking=yes
+    steps:
+      - name: Install publish dependencies
+        run: pacman -Syu --noconfirm git openssh rsync
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Trust checkout as a git safe.directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Prepare non-root makepkg user
+        run: |
+          id -u "$AUR_BUILDER_USER" >/dev/null 2>&1 || useradd -m "$AUR_BUILDER_USER"
+          chown -R "$AUR_BUILDER_USER:$AUR_BUILDER_USER" "$GITHUB_WORKSPACE"
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+      - name: Trust the AUR host key
+        run: |
+          mkdir -p "$HOME/.ssh" /github/home/.ssh
+          ssh-keyscan aur.archlinux.org | tee -a "$HOME/.ssh/known_hosts" >> /github/home/.ssh/known_hosts
+          chmod 600 "$HOME/.ssh/known_hosts" /github/home/.ssh/known_hosts
+      - name: Publish inspectors-desktop-bin
+        run: ./scripts/publish-aur-package.sh inspectors-desktop-bin ssh://aur@aur.archlinux.org/inspectors-desktop-bin.git
