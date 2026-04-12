@@ -20,6 +20,7 @@ base64 = "0.22.1"
 chrono = { version = "0.4.42", features = ["serde"] }
 desktop-core = { version = "0.1.0-alpha.2", path = "crates/desktop-core" }
 linux-backend = { version = "0.1.0-alpha.2", path = "crates/linux-backend" }
+guest-runtime = { version = "0.1.0-alpha.2", path = "crates/guest-runtime" }
 schemars = { version = "1.0.4", features = ["chrono04", "uuid1"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
