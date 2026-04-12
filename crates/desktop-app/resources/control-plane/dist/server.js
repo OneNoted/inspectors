@@ -8,7 +8,6 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { chromium, firefox } from 'playwright-core';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '../../..');
 const uiRoot = join(repoRoot, 'apps', 'web-ui', 'public');
@@ -21,6 +20,23 @@ const browserBackendPreference = process.env.ACU_BROWSER_BACKEND ?? 'remote-cdp'
 const browserDockerImage = process.env.ACU_BROWSER_DOCKER_IMAGE ?? 'chromedp/headless-shell';
 const browserDockerName = process.env.ACU_BROWSER_DOCKER_NAME ?? 'acu-browser-cdp';
 const screenshotPollIntervalMs = 3000;
+let playwrightModulePromise = null;
+async function loadPlaywrightModule() {
+    if (!playwrightEnabled) {
+        throw new Error('playwright browser adapter is disabled in this environment');
+    }
+    if (!playwrightModulePromise) {
+        playwrightModulePromise = import('playwright-core');
+    }
+    try {
+        return await playwrightModulePromise;
+    }
+    catch (error) {
+        playwrightModulePromise = null;
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`playwright-core is unavailable in this environment: ${message}`);
+    }
+}
 function buildScreenshotPath(sessionId) {
     return `/api/sessions/${sessionId}/screenshot`;
 }
@@ -287,12 +303,10 @@ async function ensureRemoteChromium() {
     throw new Error('remote CDP browser did not become ready in time');
 }
 async function ensureBrowser(state, sessionId) {
-    if (!playwrightEnabled) {
-        throw new Error('playwright browser adapter is disabled in this environment');
-    }
     const existing = state.browserStates.get(sessionId);
     if (existing)
         return existing;
+    const { chromium, firefox } = await loadPlaywrightModule();
     if (browserBackendPreference === 'remote-cdp') {
         const cdpUrl = await ensureRemoteChromium();
         const browser = await chromium.connectOverCDP(cdpUrl);

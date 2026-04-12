@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { Duplex } from 'node:stream';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { chromium, firefox, type BrowserContext, type Page } from 'playwright-core';
+import type { BrowserContext, Page } from 'playwright-core';
 import type { ActionReceipt, ActionRequest, JsonObject, LiveDesktopView, RuntimeCapabilities, SessionRecord, TaskRecord } from './types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -24,6 +24,7 @@ const browserBackendPreference = process.env.ACU_BROWSER_BACKEND ?? 'remote-cdp'
 const browserDockerImage = process.env.ACU_BROWSER_DOCKER_IMAGE ?? 'chromedp/headless-shell';
 const browserDockerName = process.env.ACU_BROWSER_DOCKER_NAME ?? 'acu-browser-cdp';
 const screenshotPollIntervalMs = 3000;
+let playwrightModulePromise: Promise<typeof import('playwright-core')> | null = null;
 
 type TaskStatus = TaskRecord['status'];
 
@@ -46,6 +47,22 @@ interface ControlPlaneState {
   actionHistory: Map<string, JsonObject[]>;
   browserStates: Map<string, BrowserState>;
   browserSnapshots: Map<string, BrowserSnapshotCache>;
+}
+
+async function loadPlaywrightModule(): Promise<typeof import('playwright-core')> {
+  if (!playwrightEnabled) {
+    throw new Error('playwright browser adapter is disabled in this environment');
+  }
+  if (!playwrightModulePromise) {
+    playwrightModulePromise = import('playwright-core');
+  }
+  try {
+    return await playwrightModulePromise;
+  } catch (error) {
+    playwrightModulePromise = null;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`playwright-core is unavailable in this environment: ${message}`);
+  }
 }
 
 function buildScreenshotPath(sessionId: string): string {
@@ -335,11 +352,9 @@ async function ensureRemoteChromium(): Promise<string> {
 }
 
 async function ensureBrowser(state: ControlPlaneState, sessionId: string): Promise<BrowserState> {
-  if (!playwrightEnabled) {
-    throw new Error('playwright browser adapter is disabled in this environment');
-  }
   const existing = state.browserStates.get(sessionId);
   if (existing) return existing;
+  const { chromium, firefox } = await loadPlaywrightModule();
 
   if (browserBackendPreference === 'remote-cdp') {
     const cdpUrl = await ensureRemoteChromium();
