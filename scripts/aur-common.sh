@@ -19,12 +19,26 @@ aur_git_pkgver() {
     "$(git -C "$repo_root" rev-parse --short HEAD)"
 }
 
+run_makepkg_nonroot() {
+  local pkg_dir=$1
+  shift
+
+  if [[ ${EUID:-$(id -u)} -eq 0 && -n ${AUR_BUILDER_USER:-} ]]; then
+    runuser -u "$AUR_BUILDER_USER" -- sh -lc "cd '$pkg_dir' && $*"
+  else
+    (
+      cd "$pkg_dir"
+      "$@"
+    )
+  fi
+}
+
 render_aur_srcinfo() {
   local pkg_dir=$1
   local repo_root=${2:-$(aur_repo_root)}
   local mode=${3:-tracked}
   local rendered
-  rendered=$(cd "$pkg_dir" && env CARCH=x86_64 makepkg --printsrcinfo)
+  rendered=$(run_makepkg_nonroot "$pkg_dir" env CARCH=x86_64 makepkg --printsrcinfo)
 
   if [[ "$mode" == live && $(basename "$pkg_dir") == *-git ]]; then
     local computed_pkgver
