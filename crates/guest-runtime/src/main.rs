@@ -27,6 +27,9 @@ use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
 const SCREENSHOT_POLL_INTERVAL_MS: u64 = 3_000;
+const QEMU_PRODUCT_DESKTOP_USER: &str = "ubuntu";
+const QEMU_PRODUCT_DESKTOP_HOME: &str = "/home/ubuntu";
+const QEMU_PRODUCT_RUNTIME_DIR: &str = "/run/user/1000";
 
 #[derive(Clone)]
 struct AppState {
@@ -315,14 +318,27 @@ async fn cleanup_orphaned_qemu_containers() {
     }
 }
 
-fn display_session_env(display: &str) -> Vec<(String, String)> {
+fn display_session_env(
+    display: &str,
+    desktop_home: Option<&str>,
+    desktop_runtime_dir: Option<&str>,
+) -> Vec<(String, String)> {
     if display != ":0" {
         return vec![];
     }
 
     let mut env = Vec::new();
-    let runtime_dir = Path::new("/run/user/1000");
-    if runtime_dir.exists() {
+    let runtime_dir = desktop_runtime_dir
+        .map(PathBuf::from)
+        .or_else(|| std::env::var("XDG_RUNTIME_DIR").ok().map(PathBuf::from))
+        .or_else(|| {
+            Path::new(QEMU_PRODUCT_RUNTIME_DIR)
+                .exists()
+                .then(|| PathBuf::from(QEMU_PRODUCT_RUNTIME_DIR))
+        });
+    if let Some(runtime_dir) = runtime_dir.as_ref()
+        && runtime_dir.exists()
+    {
         env.push((
             "XDG_RUNTIME_DIR".to_string(),
             runtime_dir.to_string_lossy().to_string(),
@@ -336,13 +352,28 @@ fn display_session_env(display: &str) -> Vec<(String, String)> {
         }
     }
 
-    for candidate in [
-        "/run/user/1000/gdm/Xauthority",
-        "/run/user/1000/Xauthority",
-        "/home/ubuntu/.Xauthority",
-    ] {
-        if Path::new(candidate).exists() {
-            env.push(("XAUTHORITY".to_string(), candidate.to_string()));
+    if let Ok(xauthority) = std::env::var("XAUTHORITY")
+        && Path::new(&xauthority).exists()
+    {
+        env.push(("XAUTHORITY".to_string(), xauthority));
+        return env;
+    }
+
+    let mut candidates = Vec::new();
+    if let Some(runtime_dir) = runtime_dir.as_ref() {
+        candidates.push(runtime_dir.join("gdm/Xauthority"));
+        candidates.push(runtime_dir.join("Xauthority"));
+    }
+    if let Some(desktop_home) = desktop_home {
+        candidates.push(Path::new(desktop_home).join(".Xauthority"));
+    }
+
+    for candidate in candidates {
+        if candidate.exists() {
+            env.push((
+                "XAUTHORITY".to_string(),
+                candidate.to_string_lossy().to_string(),
+            ));
             break;
         }
     }
@@ -482,6 +513,8 @@ async fn create_xvfb_session(
         artifacts_dir: artifacts_dir.clone(),
         browser_command: state.browser_command.clone(),
         session_env: vec![],
+        default_user: None,
+        default_user_home: None,
     });
     let record = SessionRecord {
         id: session_id.clone(),
@@ -495,6 +528,9 @@ async fn create_xvfb_session(
         artifacts_dir: artifacts_dir.to_string_lossy().to_string(),
         capabilities: backend.capabilities(),
         browser_command: Some(state.browser_command.clone()),
+        desktop_user: None,
+        desktop_home: None,
+        desktop_runtime_dir: None,
         runtime_base_url: Some(state.runtime_base_url.clone()),
         viewer_url: None,
         live_desktop_view: None,
@@ -530,6 +566,15 @@ async fn create_existing_display_session(
         .browser_command
         .clone()
         .unwrap_or_else(|| state.browser_command.clone());
+    let default_user = request.desktop_user.clone();
+    let desktop_home = request
+        .desktop_home
+        .clone()
+        .or_else(|| std::env::var("HOME").ok());
+    let desktop_runtime_dir = request
+        .desktop_runtime_dir
+        .clone()
+        .or_else(|| std::env::var("XDG_RUNTIME_DIR").ok());
     let artifacts_dir = state.artifacts_root.join(&session_id);
     tokio::fs::create_dir_all(&artifacts_dir)
         .await
@@ -544,7 +589,13 @@ async fn create_existing_display_session(
         display: display.clone(),
         artifacts_dir: artifacts_dir.clone(),
         browser_command: browser_command.clone(),
-        session_env: display_session_env(&display),
+        session_env: display_session_env(
+            &display,
+            desktop_home.as_deref(),
+            desktop_runtime_dir.as_deref(),
+        ),
+        default_user: default_user.clone(),
+        default_user_home: desktop_home.clone(),
     });
     let record = SessionRecord {
         id: session_id.clone(),
@@ -558,6 +609,9 @@ async fn create_existing_display_session(
         artifacts_dir: artifacts_dir.to_string_lossy().to_string(),
         capabilities: backend.capabilities(),
         browser_command: Some(browser_command),
+        desktop_user: request.desktop_user.clone(),
+        desktop_home,
+        desktop_runtime_dir,
         runtime_base_url: Some(state.runtime_base_url.clone()),
         viewer_url: None,
         live_desktop_view: None,
@@ -754,6 +808,14 @@ async fn create_qemu_session(
     } else {
         "viewer_only".to_string()
     };
+    let desktop_user = (qemu_profile == QemuSessionProfile::Product)
+        .then(|| QEMU_PRODUCT_DESKTOP_USER.to_string());
+    let desktop_home = desktop_user
+        .as_ref()
+        .map(|_| QEMU_PRODUCT_DESKTOP_HOME.to_string());
+    let desktop_runtime_dir = desktop_user
+        .as_ref()
+        .map(|_| QEMU_PRODUCT_RUNTIME_DIR.to_string());
     let record = SessionRecord {
         id: session_id.clone(),
         provider: "qemu".to_string(),
@@ -766,6 +828,9 @@ async fn create_qemu_session(
         artifacts_dir: artifacts_dir.to_string_lossy().to_string(),
         capabilities,
         browser_command: Some(state.browser_command.clone()),
+        desktop_user,
+        desktop_home,
+        desktop_runtime_dir,
         runtime_base_url: None,
         viewer_url: Some(viewer_url.clone()),
         live_desktop_view: None,
@@ -877,6 +942,12 @@ async fn monitor_qemu_bridge(monitor: QemuBridgeMonitor) {
                     disable_kvm: None,
                     qemu_profile: None,
                     shared_host_path: None,
+                    desktop_user: (monitor.qemu_profile == QemuSessionProfile::Product)
+                        .then(|| QEMU_PRODUCT_DESKTOP_USER.to_string()),
+                    desktop_home: (monitor.qemu_profile == QemuSessionProfile::Product)
+                        .then(|| QEMU_PRODUCT_DESKTOP_HOME.to_string()),
+                    desktop_runtime_dir: (monitor.qemu_profile == QemuSessionProfile::Product)
+                        .then(|| QEMU_PRODUCT_RUNTIME_DIR.to_string()),
                 };
                 match bridge_json::<BridgeSessionResponse>(
                     &monitor.http_client,
@@ -1869,6 +1940,7 @@ async fn candidate_displays(state: &AppState) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
+        QEMU_PRODUCT_DESKTOP_HOME, QEMU_PRODUCT_DESKTOP_USER, QEMU_PRODUCT_RUNTIME_DIR,
         QemuContainerSpec, QemuLaunchMode, SessionRecord, derive_live_desktop_view,
         docker_run_args, enrich_session_record, merge_capabilities, parse_published_port,
         resolve_qemu_endpoint, should_retry_qemu_without_published_ports,
@@ -1998,6 +2070,9 @@ mod tests {
             artifacts_dir: "artifacts/runtime/qemu-product".to_string(),
             capabilities: vec!["viewer".to_string()],
             browser_command: Some("firefox".to_string()),
+            desktop_user: Some(QEMU_PRODUCT_DESKTOP_USER.to_string()),
+            desktop_home: Some(QEMU_PRODUCT_DESKTOP_HOME.to_string()),
+            desktop_runtime_dir: Some(QEMU_PRODUCT_RUNTIME_DIR.to_string()),
             runtime_base_url: None,
             viewer_url: Some("http://127.0.0.1:32771".to_string()),
             live_desktop_view: None,
@@ -2051,6 +2126,9 @@ mod tests {
             artifacts_dir: "artifacts/runtime/qemu-product".to_string(),
             capabilities: vec!["viewer".to_string()],
             browser_command: Some("firefox".to_string()),
+            desktop_user: Some(QEMU_PRODUCT_DESKTOP_USER.to_string()),
+            desktop_home: Some(QEMU_PRODUCT_DESKTOP_HOME.to_string()),
+            desktop_runtime_dir: Some(QEMU_PRODUCT_RUNTIME_DIR.to_string()),
             runtime_base_url: None,
             viewer_url: Some("http://127.0.0.1:32771".to_string()),
             live_desktop_view: None,
