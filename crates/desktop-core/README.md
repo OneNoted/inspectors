@@ -6,7 +6,7 @@
 
 ```toml
 [dependencies]
-desktop-core = "0.1.0-alpha.2"
+desktop-core = "0.1.0-alpha.3"
 ```
 
 The repository-level overview, architecture notes, and end-to-end examples live in the workspace [`README.md`](../../README.md).

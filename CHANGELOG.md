@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-alpha.3 - 2026-04-12
+
+Fix the packaged desktop launch path so release installs no longer require a separate `playwright-core` npm install just to start.
+
+### Fixes
+- Lazy-load Playwright only when browser automation is explicitly enabled.
+- Recut the desktop release artifacts for the stable and `-bin` AUR packages.
+
 ## 0.1.0-alpha.2 - 2026-04-12
 
 Fix the published desktop package so the AUR release builds the restored `desktop-app` crate again.

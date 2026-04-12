@@ -776,7 +776,7 @@ dependencies = [
 
 [[package]]
 name = "desktop-app"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "guest-runtime",
  "reqwest 0.12.28",
@@ -790,7 +790,7 @@ dependencies = [
 
 [[package]]
 name = "desktop-core"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "chrono",
  "schemars 1.2.1",
@@ -1531,7 +1531,7 @@ dependencies = [
 
 [[package]]
 name = "guest-runtime"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "axum",
  "chrono",
@@ -2102,7 +2102,7 @@ dependencies = [
 
 [[package]]
 name = "linux-backend"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "base64 0.22.1",
  "chrono",
