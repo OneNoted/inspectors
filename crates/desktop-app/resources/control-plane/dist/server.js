@@ -10,8 +10,6 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '../../..');
-const uiRoot = join(repoRoot, 'apps', 'web-ui', 'public');
-const artifactRoot = join(repoRoot, 'artifacts');
 const defaultGuestRuntimeUrl = process.env.GUEST_RUNTIME_URL ?? 'http://127.0.0.1:4001';
 const playwrightEnabled = process.env.ACU_ENABLE_PLAYWRIGHT === '1';
 const execFileAsync = promisify(execFile);
@@ -21,6 +19,12 @@ const browserDockerImage = process.env.ACU_BROWSER_DOCKER_IMAGE ?? 'chromedp/hea
 const browserDockerName = process.env.ACU_BROWSER_DOCKER_NAME ?? 'acu-browser-cdp';
 const screenshotPollIntervalMs = 3000;
 let playwrightModulePromise = null;
+function resolveUiRoot() {
+    return resolve(process.env.ACU_UI_ROOT ?? join(repoRoot, 'apps', 'web-ui', 'public'));
+}
+function resolveArtifactRoot() {
+    return resolve(process.env.ACU_ARTIFACT_ROOT ?? join(repoRoot, 'artifacts'));
+}
 async function loadPlaywrightModule() {
     if (!playwrightEnabled) {
         throw new Error('playwright browser adapter is disabled in this environment');
@@ -526,7 +530,7 @@ async function handleBrowserAction(state, sessionId, action) {
             }
             break;
         case 'browser_screenshot': {
-            const path = join(artifactRoot, `${sessionId}-${Date.now()}-browser.png`);
+            const path = join(state.artifactRoot, `${sessionId}-${Date.now()}-browser.png`);
             await mkdir(dirname(path), { recursive: true });
             await browser.page.screenshot({ path, fullPage: true });
             result = { path };
@@ -548,13 +552,13 @@ async function handleBrowserAction(state, sessionId, action) {
     attachReceiptToTask(state, action.taskId, receipt);
     return receipt;
 }
-async function serveStatic(req, res) {
+async function serveStatic(state, req, res) {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     if (!['GET', 'HEAD'].includes(req.method ?? 'GET'))
         return false;
     const relativePath = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
-    const filePath = resolve(uiRoot, relativePath);
-    if (!filePath.startsWith(uiRoot) || !existsSync(filePath))
+    const filePath = resolve(state.uiRoot, relativePath);
+    if (!filePath.startsWith(state.uiRoot) || !existsSync(filePath))
         return false;
     const info = await stat(filePath);
     const contentType = extname(filePath) === '.html'
@@ -578,7 +582,7 @@ async function serveStatic(req, res) {
 export function createRequestHandler(state) {
     return async (req, res) => {
         try {
-            if (await serveStatic(req, res))
+            if (await serveStatic(state, req, res))
                 return;
             const url = new URL(req.url ?? '/', 'http://127.0.0.1');
             if (req.method === 'GET' && url.pathname === '/api/health') {
@@ -876,9 +880,13 @@ async function handleLiveViewUpgrade(state, req, socket, head) {
     socket.on('error', () => upstreamSocket.destroy());
 }
 export async function startControlPlaneServer(port = Number(process.env.PORT ?? 3000), guestRuntimeUrl = defaultGuestRuntimeUrl) {
+    const uiRoot = resolveUiRoot();
+    const artifactRoot = resolveArtifactRoot();
     await mkdir(artifactRoot, { recursive: true });
     const state = {
         guestRuntimeUrl,
+        uiRoot,
+        artifactRoot,
         tasks: new Map(),
         actionHistory: new Map(),
         browserStates: new Map(),

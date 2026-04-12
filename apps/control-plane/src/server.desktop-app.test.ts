@@ -2,8 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 const { startControlPlaneServer } = await import('./server.js');
+
+function tempDir(prefix: string): string {
+  return mkdtempSync(join(tmpdir(), `${prefix}-`));
+}
 
 async function startGuestServer() {
   const guestServer = createServer(async (req, res) => {
@@ -82,6 +89,36 @@ test('control-plane serves the bundled operator UI assets', async () => {
     assert.match(await appResponse.text(), /desktop=\$\{session\.desktop_user\}/);
   } finally {
     await stopServers(controlPlane, guest.guestServer);
+  }
+});
+
+test('control-plane honors ACU_UI_ROOT for packaged desktop assets', async () => {
+  const uiRoot = tempDir('acu-ui-root');
+  mkdirSync(join(uiRoot, 'nested'));
+  writeFileSync(join(uiRoot, 'index.html'), '<!doctype html><title>Packaged UI</title><main>Packaged UI</main>');
+  writeFileSync(join(uiRoot, 'nested', 'ok.js'), 'console.log("ok");');
+  const previousUiRoot = process.env.ACU_UI_ROOT;
+  process.env.ACU_UI_ROOT = uiRoot;
+
+  const guest = await startGuestServer();
+  const controlPlane = await startControlPlaneServer(0, guest.baseUrl);
+  const baseUrl = `http://127.0.0.1:${(controlPlane.server.address() as { port: number }).port}`;
+
+  try {
+    const rootResponse = await fetch(`${baseUrl}/`);
+    assert.equal(rootResponse.status, 200);
+    assert.match(await rootResponse.text(), /Packaged UI/);
+    const nestedResponse = await fetch(`${baseUrl}/nested/ok.js`);
+    assert.equal(nestedResponse.status, 200);
+    assert.match(await nestedResponse.text(), /console\.log/);
+  } finally {
+    if (previousUiRoot === undefined) {
+      delete process.env.ACU_UI_ROOT;
+    } else {
+      process.env.ACU_UI_ROOT = previousUiRoot;
+    }
+    await stopServers(controlPlane, guest.guestServer);
+    rmSync(uiRoot, { recursive: true, force: true });
   }
 });
 
