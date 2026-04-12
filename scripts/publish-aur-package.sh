@@ -21,7 +21,15 @@ tmp_dir=$(mktemp -d)
 trap 'rm -rf "$tmp_dir"' EXIT
 
 git clone --depth 1 "$remote_url" "$tmp_dir/repo"
-rsync -a --delete --exclude '.git' "$source_dir/" "$tmp_dir/repo/"
+find "$tmp_dir/repo" -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+cp "$source_dir/PKGBUILD" "$tmp_dir/repo/PKGBUILD"
+cp "$source_dir/.SRCINFO" "$tmp_dir/repo/.SRCINFO"
+
+for optional in *.install *.patch; do
+  if compgen -G "$source_dir/$optional" > /dev/null; then
+    cp "$source_dir/"$optional "$tmp_dir/repo/"
+  fi
+done
 
 srcinfo_mode=tracked
 if [[ "$package_name" == *-git ]]; then
