@@ -12,15 +12,15 @@ edition = "2024"
 license = "MIT"
 repository = "https://github.com/OneNoted/inspectors"
 rust-version = "1.85"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 
 [workspace.dependencies]
 axum = { version = "0.8.6", features = ["macros"] }
 base64 = "0.22.1"
 chrono = { version = "0.4.42", features = ["serde"] }
-desktop-core = { version = "0.1.0-alpha.3", path = "crates/desktop-core" }
-linux-backend = { version = "0.1.0-alpha.3", path = "crates/linux-backend" }
-guest-runtime = { version = "0.1.0-alpha.3", path = "crates/guest-runtime" }
+desktop-core = { version = "0.1.0-alpha.4", path = "crates/desktop-core" }
+linux-backend = { version = "0.1.0-alpha.4", path = "crates/linux-backend" }
+guest-runtime = { version = "0.1.0-alpha.4", path = "crates/guest-runtime" }
 schemars = { version = "1.0.4", features = ["chrono04", "uuid1"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"

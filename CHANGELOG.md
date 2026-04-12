@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-alpha.4 - 2026-04-12
+
+Fix packaged desktop installs again by making the bundled control-plane honor its packaged UI root instead of assuming a repo checkout.
+
+### Fixes
+- Respect `ACU_UI_ROOT` and `ACU_ARTIFACT_ROOT` at runtime in the control-plane.
+- Recut the stable and `-bin` release artifacts so desktop launches no longer render a JSON 404.
+
 ## 0.1.0-alpha.3 - 2026-04-12
 
 Fix the packaged desktop launch path so release installs no longer require a separate `playwright-core` npm install just to start.
