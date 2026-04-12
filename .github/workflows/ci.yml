@@ -20,6 +20,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Install desktop app system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev
       - name: Prepare temp dir
         run: mkdir -p "$TMPDIR"
       - name: Install JS deps
@@ -60,9 +68,12 @@ jobs:
           rm -rf "$INSTALL_ROOT"
           cargo install --path crates/desktop-core --bin export-schemas --locked --root "$INSTALL_ROOT" --force
           cargo install --path crates/guest-runtime --locked --root "$INSTALL_ROOT" --force
+          git config --global protocol.file.allow always
+          cargo install --git "file://${GITHUB_WORKSPACE}" desktop-app --bin inspectors-desktop --locked --root "$INSTALL_ROOT" --force
 
           "$INSTALL_ROOT/bin/export-schemas" "$TMPDIR/schemas"
           test -f "$TMPDIR/schemas/action.schema.json"
+          test -x "$INSTALL_ROOT/bin/inspectors-desktop"
 
           "$INSTALL_ROOT/bin/guest-runtime" --host 127.0.0.1 --port 4011 --artifacts-dir "$TMPDIR/runtime-artifacts" >"$TMPDIR/guest-runtime.log" 2>&1 &
           RUNTIME_PID=$!
