@@ -65,6 +65,7 @@ jobs:
     container: archlinux:base-devel
     env:
       AUR_BUILDER_USER: aurbuilder
+      GIT_SSH_COMMAND: ssh -o UserKnownHostsFile=/github/home/.ssh/known_hosts -o StrictHostKeyChecking=yes
     steps:
       - name: Install publish dependencies
         run: pacman -Syu --noconfirm git openssh rsync
@@ -97,6 +98,7 @@ jobs:
     container: archlinux:base-devel
     env:
       AUR_BUILDER_USER: aurbuilder
+      GIT_SSH_COMMAND: ssh -o UserKnownHostsFile=/github/home/.ssh/known_hosts -o StrictHostKeyChecking=yes
     steps:
       - name: Install publish dependencies
         run: pacman -Syu --noconfirm git openssh rsync
