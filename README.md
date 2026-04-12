@@ -52,6 +52,17 @@ nix build .#guest-runtime
 
 You can also install the Rust binaries directly from the flake with `nix profile install .#guest-runtime` or `nix profile install .#export-schemas`.
 
+On Arch Linux, the packaged desktop app is also available through the AUR with `paru`:
+
+```bash
+paru -S inspectors-desktop-bin
+# or build from source packages instead:
+paru -S inspectors-desktop
+paru -S inspectors-desktop-git
+```
+
+Use the AUR packages when you want the packaged desktop app on Arch. For source checkouts, local builds, and the full development stack, keep following the [getting started guide](docs/getting-started.md). The AUR packaging source of truth lives under [packaging/aur](packaging/aur/README.md).
+
 ## Documentation
 
 - [Getting started](docs/getting-started.md)
