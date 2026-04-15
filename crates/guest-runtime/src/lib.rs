@@ -399,6 +399,10 @@ fn qemu_build_root(runtime_root: &Path) -> PathBuf {
     qemu_cache_root(runtime_root).join("_build")
 }
 
+fn legacy_qemu_build_root(runtime_root: &Path) -> PathBuf {
+    runtime_root.join("_qemu_images").join("_build")
+}
+
 fn exports_root(runtime_root: &Path) -> PathBuf {
     artifacts_base_root(runtime_root).join("exports")
 }
@@ -597,9 +601,12 @@ async fn collect_runtime_reclaim_candidates(
     candidates
 }
 
-async fn collect_build_reclaim_candidates(runtime_root: &Path) -> Vec<ReclaimCandidate> {
-    let build_root = qemu_build_root(runtime_root);
-    let Ok(entries) = std::fs::read_dir(&build_root) else {
+async fn collect_build_reclaim_candidates_for_root(
+    build_root: &Path,
+    reason: &str,
+    legacy_kind: &str,
+) -> Vec<ReclaimCandidate> {
+    let Ok(entries) = std::fs::read_dir(build_root) else {
         return Vec::new();
     };
     let mut candidates = Vec::new();
@@ -614,7 +621,7 @@ async fn collect_build_reclaim_candidates(runtime_root: &Path) -> Vec<ReclaimCan
                     path: path.to_string_lossy().to_string(),
                     tier: marker.tier,
                     kind: marker.kind,
-                    reason: "marker-owned stale qemu prep workdir".to_string(),
+                    reason: reason.to_string(),
                 });
             }
             continue;
@@ -623,11 +630,29 @@ async fn collect_build_reclaim_candidates(runtime_root: &Path) -> Vec<ReclaimCan
             candidates.push(ReclaimCandidate {
                 path: path.to_string_lossy().to_string(),
                 tier: "runtime".to_string(),
-                kind: "legacy_prepare_build".to_string(),
-                reason: "legacy qemu prep workdir without ownership marker".to_string(),
+                kind: legacy_kind.to_string(),
+                reason: reason.to_string(),
             });
         }
     }
+    candidates
+}
+
+async fn collect_build_reclaim_candidates(runtime_root: &Path) -> Vec<ReclaimCandidate> {
+    let mut candidates = collect_build_reclaim_candidates_for_root(
+        &qemu_build_root(runtime_root),
+        "qemu prep workdir without a live owner",
+        "legacy_prepare_build",
+    )
+    .await;
+    candidates.extend(
+        collect_build_reclaim_candidates_for_root(
+            &legacy_qemu_build_root(runtime_root),
+            "legacy qemu prep workdir from the old runtime cache layout",
+            "legacy_prepare_build_runtime_cache",
+        )
+        .await,
+    );
     candidates
 }
 
@@ -667,9 +692,13 @@ async fn reclaim_storage(
             "runtime_root": state.artifacts_root,
             "cache_root": qemu_cache_root(&state.artifacts_root),
             "exports_root": exports_root(&state.artifacts_root),
+            "legacy_build_root": legacy_qemu_build_root(&state.artifacts_root),
             "candidate_count": candidates.len(),
             "candidates": candidates,
             "reclaimed": reclaimed,
+            "limitations": [
+                "Detached anonymous Docker volumes from older inspectors prep runs cannot be attributed safely after their containers are gone; review Docker's own prune/report tooling before removing unrelated unused volumes."
+            ],
         })),
     )
         .into_response()

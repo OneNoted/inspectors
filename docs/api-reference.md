@@ -21,9 +21,13 @@ Response includes:
 - `runtime_root`
 - `cache_root`
 - `exports_root`
+- `legacy_build_root`
 - `candidate_count`
 - `candidates[]`
 - `reclaimed[]`
+- `limitations[]`
+
+Use the reclaim endpoint for inspectors-managed stale runtime directories and old qemu prep workdirs. Detached anonymous Docker volumes from older versions may still require manual Docker review because inspectors cannot attribute them safely once their original containers are gone.
 
 ### `POST /api/sessions`
 Create a sandbox session.

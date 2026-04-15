@@ -287,6 +287,14 @@ async fn reclaim_endpoint_reports_and_reclaims_legacy_runtime_state() {
     let legacy_dir = artifacts_dir.path().join(Uuid::new_v4().to_string());
     fs::create_dir_all(legacy_dir.join("seed")).expect("create legacy seed dir");
     fs::write(legacy_dir.join("data.img"), b"legacy").expect("write legacy data");
+    let legacy_build_dir = artifacts_dir
+        .path()
+        .join("_qemu_images")
+        .join("_build")
+        .join("acu-qemu-product-legacy");
+    fs::create_dir_all(&legacy_build_dir).expect("create legacy build dir");
+    fs::write(legacy_build_dir.join("boot.qcow2"), b"legacy-build")
+        .expect("write legacy build image");
 
     let mut runtime = GuestRuntimeHarness::start(fake_bin_dir.path(), artifacts_dir.path()).await;
 
@@ -299,9 +307,19 @@ async fn reclaim_endpoint_reports_and_reclaims_legacy_runtime_state() {
         report_status, 200,
         "unexpected report payload: {report_payload}"
     );
-    assert_eq!(report_payload["candidate_count"], 1);
-    assert_eq!(report_payload["candidates"][0]["kind"], "legacy_runtime");
+    assert_eq!(report_payload["candidate_count"], 2);
+    let report_kinds = report_payload["candidates"]
+        .as_array()
+        .expect("report candidates")
+        .iter()
+        .map(|candidate| candidate["kind"].as_str().expect("candidate kind"))
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        report_kinds,
+        std::collections::BTreeSet::from(["legacy_runtime", "legacy_prepare_build_runtime_cache",])
+    );
     assert!(legacy_dir.exists());
+    assert!(legacy_build_dir.exists());
 
     let (apply_status, apply_payload) = runtime.json_request(
         "POST",
@@ -312,14 +330,27 @@ async fn reclaim_endpoint_reports_and_reclaims_legacy_runtime_state() {
         apply_status, 200,
         "unexpected apply payload: {apply_payload}"
     );
-    assert_eq!(apply_payload["candidate_count"], 1);
+    assert_eq!(apply_payload["candidate_count"], 2);
+    let reclaimed_paths = apply_payload["reclaimed"]
+        .as_array()
+        .expect("reclaimed paths")
+        .iter()
+        .map(|path| path.as_str().expect("reclaimed path").to_string())
+        .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(
-        apply_payload["reclaimed"][0],
-        legacy_dir.to_string_lossy().to_string()
+        reclaimed_paths,
+        std::collections::BTreeSet::from([
+            legacy_dir.to_string_lossy().to_string(),
+            legacy_build_dir.to_string_lossy().to_string(),
+        ])
     );
     assert!(
         !legacy_dir.exists(),
         "legacy runtime dir should be reclaimed"
+    );
+    assert!(
+        !legacy_build_dir.exists(),
+        "legacy build dir should be reclaimed"
     );
 
     runtime.shutdown().await;
