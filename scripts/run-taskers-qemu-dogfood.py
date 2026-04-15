@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -17,10 +18,7 @@ SHARED_HOST_PATH = os.environ.get(
     "ACU_TASKERS_HOST_PATH",
     str((Path(__file__).resolve().parents[2] / "taskers").resolve()),
 )
-TASKERS_BUNDLE = os.environ.get(
-    "ACU_TASKERS_BUNDLE",
-    "/mnt/shared/hostshare/dist/taskers-linux-bundle-v0.6.0-x86_64-unknown-linux-gnu.tar.xz",
-)
+TASKERS_BUNDLE_ENV = os.environ.get("ACU_TASKERS_BUNDLE")
 
 client = ComputerUseClient(base_url=BASE_URL)
 started = time.time()
@@ -32,6 +30,10 @@ def fetch_screenshot(session_id: str, destination: Path) -> str:
     return str(destination)
 
 
+def screenshot_sha256(path: str) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
 def create_qemu_session(**payload):
     last_error = None
     for _ in range(3):
@@ -41,6 +43,56 @@ def create_qemu_session(**payload):
             last_error = exc
             time.sleep(2)
     raise last_error
+
+
+def resolve_taskers_bundle() -> str:
+    if TASKERS_BUNDLE_ENV:
+        return TASKERS_BUNDLE_ENV
+
+    shared_host_root = Path(SHARED_HOST_PATH)
+    dist_dir = shared_host_root / "dist"
+    generic_bundle = dist_dir / "taskers-linux-bundle-x86_64-unknown-linux-gnu.tar.xz"
+    if generic_bundle.exists():
+        return f"/mnt/shared/hostshare/dist/{generic_bundle.name}"
+
+    versioned_bundles = sorted(
+        dist_dir.glob("taskers-linux-bundle-v*-x86_64-unknown-linux-gnu.tar.xz"),
+        key=lambda path: path.stat().st_mtime,
+    )
+    if versioned_bundles:
+        return f"/mnt/shared/hostshare/dist/{versioned_bundles[-1].name}"
+
+    raise SystemExit(
+        f"could not find a Taskers Linux bundle under {dist_dir}; set ACU_TASKERS_BUNDLE explicitly"
+    )
+
+
+def wait_for_taskers_visibility(session_id: str, baseline_hash: str) -> dict:
+    deadline = time.time() + 45
+    latest_observation = {}
+    latest_screenshot_hash = baseline_hash
+    while time.time() < deadline:
+        latest_observation = client.get_observation(session_id)
+        active_window = latest_observation.get("active_window") or {}
+        screenshot_path = fetch_screenshot(session_id, Path("artifacts") / "taskers-qemu-launch.png")
+        latest_screenshot_hash = screenshot_sha256(screenshot_path)
+        window_text = " ".join(
+            str(active_window.get(key, "")).lower()
+            for key in ("title", "class_name")
+        )
+        if "taskers" in window_text or latest_screenshot_hash != baseline_hash:
+            return {
+                "observation": latest_observation,
+                "screenshot_path": screenshot_path,
+                "screenshot_sha256": latest_screenshot_hash,
+            }
+        time.sleep(2)
+    raise SystemExit(
+        f"Taskers did not become visibly active in time: observation={latest_observation} baseline={baseline_hash} latest={latest_screenshot_hash}"
+    )
+
+
+TASKERS_BUNDLE = resolve_taskers_bundle()
 
 
 session = create_qemu_session(
@@ -79,9 +131,14 @@ with urllib.request.urlopen(f"{BASE_URL}{canonical_live_view}") as response:
 
 task = client.create_task(
     session_id,
-    "Launch Taskers, click a visible desktop button, create Workspace 2, and capture proof artifacts",
+    "Launch Taskers in qemu product mode, verify the visible GUI appears, exercise desktop input, create Workspace 2, and capture proof artifacts",
 )["task"]
 task_id = task["id"]
+
+artifacts_dir = Path("artifacts")
+artifacts_dir.mkdir(exist_ok=True)
+baseline_screenshot = fetch_screenshot(session_id, artifacts_dir / "taskers-qemu-baseline.png")
+baseline_hash = screenshot_sha256(baseline_screenshot)
 
 setup_cmd = f"""set -e
 install -d -o ubuntu -g ubuntu /home/ubuntu/taskers-bundle
@@ -113,7 +170,17 @@ launch_receipt = client.perform_action(
         "taskId": task_id,
     },
 )
-time.sleep(8)
+launch_visibility = wait_for_taskers_visibility(session_id, baseline_hash)
+visibility_observation = launch_visibility["observation"]
+mouse_move_receipt = client.perform_action(
+    session_id,
+    {"kind": "mouse_move", "x": 720, "y": 420, "taskId": task_id},
+)
+mouse_click_receipt = client.perform_action(
+    session_id,
+    {"kind": "mouse_click", "x": 720, "y": 420, "button": "left", "taskId": task_id},
+)
+time.sleep(1)
 before_tree_receipt = client.perform_action(
     session_id,
     {
@@ -127,10 +194,8 @@ before_tree = client.perform_action(
     session_id,
     {"kind": "read_file", "path": "/tmp/taskers-before.json", "taskId": task_id},
 )
-
-artifacts_dir = Path("artifacts")
-artifacts_dir.mkdir(exist_ok=True)
 before_screenshot = fetch_screenshot(session_id, artifacts_dir / "taskers-qemu-before.png")
+before_hash = screenshot_sha256(before_screenshot)
 
 workspace_cmd = (
     '/home/ubuntu/taskers-bundle/bin/taskersctl workspace new --label "Workspace 2" '
@@ -151,6 +216,7 @@ after_tree = client.perform_action(
 )
 time.sleep(2)
 after_screenshot = fetch_screenshot(session_id, artifacts_dir / "taskers-qemu-after.png")
+after_hash = screenshot_sha256(after_screenshot)
 log_receipt = client.perform_action(
     session_id,
     {
@@ -173,27 +239,40 @@ if after_count <= before_count or "Workspace 2" not in labels:
     raise SystemExit(
         f"Taskers proof did not create a new workspace: before={before_count} after={after_count} labels={labels}"
     )
+if baseline_hash == after_hash and before_hash == after_hash:
+    raise SystemExit("Taskers proof did not produce a visible desktop change across captured screenshots")
 
 result = {
     "task_id": "taskers-qemu-dogfood",
+    "selected_app": "Taskers",
+    "selected_bundle": TASKERS_BUNDLE,
     "session": latest_session,
     "live_desktop_view": live_view,
     "live_view_probe": live_view_probe,
     "task": task,
+    "visibility_observation": visibility_observation,
     "setup_receipt": setup_receipt,
     "launch_receipt": launch_receipt,
+    "mouse_move_receipt": mouse_move_receipt,
+    "mouse_click_receipt": mouse_click_receipt,
     "before_tree_receipt": before_tree_receipt,
     "before_tree": before_tree,
     "workspace_receipt": workspace_receipt,
     "after_tree": after_tree,
     "taskers_processes": log_receipt,
     "artifacts": {
+        "baseline_screenshot": baseline_screenshot,
+        "launch_screenshot": launch_visibility["screenshot_path"],
         "before_screenshot": before_screenshot,
         "after_screenshot": after_screenshot,
     },
     "metrics": {
         "duration_ms": int((time.time() - started) * 1000),
-        "step_count": 5,
+        "step_count": 7,
+        "baseline_sha256": baseline_hash,
+        "launch_sha256": launch_visibility["screenshot_sha256"],
+        "before_sha256": before_hash,
+        "after_sha256": after_hash,
         "workspace_count_before": before_count,
         "workspace_count_after": after_count,
     },

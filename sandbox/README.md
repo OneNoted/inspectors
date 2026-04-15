@@ -52,6 +52,7 @@ The product guest uses a prepared Ubuntu GNOME image. The regression fixture may
   ```bash
   ACU_BASE_URL=http://127.0.0.1:3000 python scripts/run-taskers-qemu-dogfood.py
   ```
+  This is the recommended real-app qemu product proof because Taskers is a user-facing GUI app with machine-verifiable `taskersctl` state. When `ACU_TASKERS_BUNDLE` is unset, the script now auto-selects the newest local Linux bundle from `../taskers/dist`.
 
 ## Lifecycle semantics
 `bridge_status` remains the coarse bridge lifecycle (`viewer_only`, `bridge_waiting`, `runtime_ready`, `failed`).
