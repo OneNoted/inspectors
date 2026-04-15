@@ -67,6 +67,30 @@ def resolve_taskers_bundle() -> str:
     )
 
 
+def export_review_bundle(session_id: str) -> dict:
+    payload = client.export_review_bundle(session_id)
+    bundle = payload.get("bundle") or {}
+    review_recording = payload.get("review_recording") or {}
+    bundle_path = Path(bundle.get("path") or "")
+    if bundle.get("kind") != "review_bundle":
+        raise SystemExit(f"expected review_bundle export kind, got: {payload}")
+    if review_recording.get("mode") != "sparse_timeline":
+        raise SystemExit(f"expected sparse_timeline review recording, got: {payload}")
+    if review_recording.get("status") != "exported":
+        raise SystemExit(f"expected exported review recording status, got: {payload}")
+    if not bundle_path.exists():
+        raise SystemExit(f"expected exported review bundle path to exist, got: {bundle_path}")
+    for required_name in ("review.json", "timeline.jsonl"):
+        if not (bundle_path / required_name).exists():
+            raise SystemExit(f"expected exported review bundle to contain {required_name}: {bundle_path}")
+    return {
+        "payload": payload,
+        "path": str(bundle_path),
+        "manifest_path": str(bundle_path / "review.json"),
+        "timeline_path": str(bundle_path / "timeline.jsonl"),
+    }
+
+
 def wait_for_taskers_visibility(session_id: str, baseline_hash: str) -> dict:
     deadline = time.time() + 45
     latest_observation = {}
@@ -225,6 +249,14 @@ log_receipt = client.perform_action(
         "taskId": task_id,
     },
 )
+runtime_review_dir = Path(latest_session["artifacts_dir"]) / "review"
+review_export = export_review_bundle(session_id)
+session_after_export = client.get_session(session_id)["session"]
+exported_summary = session_after_export.get("review_recording") or {}
+if (exported_summary.get("exported_bundle") or {}).get("path") != review_export["path"]:
+    raise SystemExit(
+        f"session metadata did not retain exported bundle path: summary={exported_summary} export={review_export}"
+    )
 
 before_payload = json.loads((before_tree.get("result") or {}).get("contents") or "{}")
 after_payload = json.loads((after_tree.get("result") or {}).get("contents") or "{}")
@@ -260,6 +292,7 @@ result = {
     "workspace_receipt": workspace_receipt,
     "after_tree": after_tree,
     "taskers_processes": log_receipt,
+    "review_recording": exported_summary,
     "artifacts": {
         "baseline_screenshot": baseline_screenshot,
         "launch_screenshot": launch_visibility["screenshot_path"],
@@ -286,4 +319,16 @@ try:
     client._request(f"/api/sessions/{session_id}", "DELETE", {})
 except Exception:
     pass
+if runtime_review_dir.exists():
+    raise SystemExit(f"expected runtime review dir to be removed after session deletion: {runtime_review_dir}")
+if not Path(review_export["path"]).exists():
+    raise SystemExit(f"expected exported review bundle to survive session deletion: {review_export['path']}")
+
+result["review_export"] = {
+    **review_export,
+    "runtime_review_dir": str(runtime_review_dir),
+    "runtime_review_dir_removed_after_delete": not runtime_review_dir.exists(),
+    "exported_bundle_survived_session_delete": Path(review_export["path"]).exists(),
+}
+Path("artifacts/taskers-qemu-dogfood.json").write_text(json.dumps(result, indent=2))
 print("wrote artifacts/taskers-qemu-dogfood.json")

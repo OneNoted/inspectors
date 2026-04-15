@@ -31,6 +31,8 @@ Agent Computer Use Platform gives agents a real Linux desktop to work in, with s
 - Runs agent tasks inside disposable Linux sessions instead of collapsing everything into a browser tab.
 - Gives you one place to work with screenshots, shell commands, files, desktop input, and session state.
 - Keeps operators in the loop with a live desktop view, structured receipts, and clear fallback modes.
+- Exposes a `review_recording` summary for qemu `product` sessions and lets you explicitly export a sparse review bundle for later human review instead of recording default video.
+- Exports storage-efficient qemu review bundles (timeline + deduplicated screenshots) when you need later human review without keeping full video.
 
 ## Default flow
 
@@ -40,7 +42,8 @@ The default happy path is now:
 2. Wait for readiness
 3. Submit a task
 4. Watch `live_desktop_view` or the truthful screenshot fallback
-5. Delete the session when done unless you explicitly export evidence
+5. Export a sparse review bundle when you need durable evidence
+6. Delete the session when done unless you explicitly export evidence
 
 That is the workflow agents should infer first. Advanced/debug controls still exist, but they are secondary.
 
@@ -88,6 +91,8 @@ Use the AUR packages when you want the packaged desktop app on Arch. For source 
 ## Status
 
 Alpha. QEMU/KVM is the product path; Xvfb stays in the repo as the lighter local fallback and regression lane.
+
+QEMU product sessions can now expose a `review_recording` summary and `POST /api/sessions/:id/review/export` for later human review. The retained artifact is intentionally a sparse review bundle rather than default video capture so storage stays bounded.
 
 ## License
 
