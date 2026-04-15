@@ -18,6 +18,7 @@ DEFAULT_QEMU_IMAGE = "qemux/qemu"
 PROFILE_TIMEOUTS = {"regression": 600, "product": 2400}
 PROFILE_RAM_MB = {"regression": "4096", "product": "8192"}
 PROFILE_DISK_GB = {"regression": "20G", "product": "40G"}
+STORAGE_MARKER_FILE = ".inspectors-storage.json"
 
 
 def run(cmd: list[str], *, capture: bool = False, check: bool = True, cwd: Path | None = None, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -34,6 +35,19 @@ def run(cmd: list[str], *, capture: bool = False, check: bool = True, cwd: Path 
 def ensure_dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def write_storage_marker(path: Path, profile: str) -> None:
+    payload = {
+        "version": 1,
+        "owner": "inspectors",
+        "tier": "runtime",
+        "kind": "prepare_build",
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "provider": "qemu",
+        "qemu_profile": profile,
+    }
+    (path / STORAGE_MARKER_FILE).write_text(json.dumps(payload, indent=2))
 
 
 def http_json(url: str, method: str = "GET", payload: dict[str, Any] | None = None) -> Any:
@@ -290,6 +304,7 @@ def ensure_image(profile: str, cache_root: Path, guest_runtime_binary: Path, qem
     work_dir = Path(
         tempfile.mkdtemp(prefix=f"acu-qemu-{profile}-", dir=str(ensure_dir(cache_root / "_build")))
     )
+    write_storage_marker(work_dir, profile)
     build_image = work_dir / "boot.qcow2"
     shutil.copy2(base_image, build_image)
     resize_qcow2(qemu_image, build_image, PROFILE_DISK_GB[profile])
@@ -331,6 +346,8 @@ def ensure_image(profile: str, cache_root: Path, guest_runtime_binary: Path, qem
         "-e",
         "ARGUMENTS=-drive file=/seed.iso,format=raw,media=cdrom,readonly=on",
         "-v",
+        f"{work_dir}:/storage",
+        "-v",
         f"{build_image}:/boot.qcow2",
         "-v",
         f"{seed_iso}:/seed.iso:ro",
@@ -346,56 +363,58 @@ def ensure_image(profile: str, cache_root: Path, guest_runtime_binary: Path, qem
 
     logs_path = profile_dir / "prepare.log"
     try:
-        deadline = time.time() + PROFILE_TIMEOUTS[profile]
-        base_runtime_url = None
-        while time.time() < deadline:
-            if not container_exists(container_name):
-                raise RuntimeError(f"{container_name} exited before guest runtime became reachable")
-            ip = inspect_container_ip(container_name)
-            if ip:
-                base_runtime_url = f"http://{ip}:4001"
-                try:
-                    health = http_json(f"{base_runtime_url}/health")
-                    if health.get("status") == "ok":
-                        break
-                except Exception:
-                    pass
-            time.sleep(5)
-        else:
-            raise TimeoutError(f"timed out waiting for {profile} guest runtime health")
+        try:
+            deadline = time.time() + PROFILE_TIMEOUTS[profile]
+            base_runtime_url = None
+            while time.time() < deadline:
+                if not container_exists(container_name):
+                    raise RuntimeError(f"{container_name} exited before guest runtime became reachable")
+                ip = inspect_container_ip(container_name)
+                if ip:
+                    base_runtime_url = f"http://{ip}:4001"
+                    try:
+                        health = http_json(f"{base_runtime_url}/health")
+                        if health.get("status") == "ok":
+                            break
+                    except Exception:
+                        pass
+                time.sleep(5)
+            else:
+                raise TimeoutError(f"timed out waiting for {profile} guest runtime health")
 
-        assert base_runtime_url is not None
-        session_id, display = maybe_attach_runtime(base_runtime_url, profile, browser_command)
-        graceful_shutdown(base_runtime_url, session_id)
-        shutdown_deadline = time.time() + 60
-        while time.time() < shutdown_deadline:
-            result = run(["docker", "inspect", "-f", "{{.State.Running}}", container_name], capture=True, check=False)
-            if result.returncode != 0 or result.stdout.strip() != "true":
-                break
-            time.sleep(2)
-    except Exception:
-        ensure_dir(logs_path.parent)
-        logs_path.write_text(docker_logs(container_name))
-        raise
+            assert base_runtime_url is not None
+            session_id, display = maybe_attach_runtime(base_runtime_url, profile, browser_command)
+            graceful_shutdown(base_runtime_url, session_id)
+            shutdown_deadline = time.time() + 60
+            while time.time() < shutdown_deadline:
+                result = run(["docker", "inspect", "-f", "{{.State.Running}}", container_name], capture=True, check=False)
+                if result.returncode != 0 or result.stdout.strip() != "true":
+                    break
+                time.sleep(2)
+        except Exception:
+            ensure_dir(logs_path.parent)
+            logs_path.write_text(docker_logs(container_name))
+            raise
+        finally:
+            run(["docker", "rm", "-f", "-v", container_name], check=False, capture=True)
+
+        ensure_dir(profile_dir)
+        shutil.move(str(build_image), template_image)
+        metadata = {
+            "profile": profile,
+            "image_path": str(template_image),
+            "guest_runtime_binary": str(guest_runtime_binary),
+            "base_image": str(base_image),
+            "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "browser_command": browser_command,
+            "logs_path": str(logs_path),
+            "ssh_private_key": str(private_key),
+            "ssh_user": "ubuntu",
+        }
+        metadata_path.write_text(json.dumps(metadata, indent=2))
+        return {"profile": profile, "image_path": str(template_image), "metadata_path": str(metadata_path), "created": True}
     finally:
-        run(["docker", "rm", "-f", container_name], check=False, capture=True)
-
-    ensure_dir(profile_dir)
-    shutil.move(str(build_image), template_image)
-    metadata = {
-        "profile": profile,
-        "image_path": str(template_image),
-        "guest_runtime_binary": str(guest_runtime_binary),
-        "base_image": str(base_image),
-        "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "browser_command": browser_command,
-        "logs_path": str(logs_path),
-        "ssh_private_key": str(private_key),
-        "ssh_user": "ubuntu",
-    }
-    metadata_path.write_text(json.dumps(metadata, indent=2))
-    shutil.rmtree(work_dir, ignore_errors=True)
-    return {"profile": profile, "image_path": str(template_image), "metadata_path": str(metadata_path), "created": True}
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def main() -> int:

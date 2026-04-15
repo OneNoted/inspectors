@@ -30,6 +30,9 @@ const SCREENSHOT_POLL_INTERVAL_MS: u64 = 3_000;
 const QEMU_PRODUCT_DESKTOP_USER: &str = "ubuntu";
 const QEMU_PRODUCT_DESKTOP_HOME: &str = "/home/ubuntu";
 const QEMU_PRODUCT_RUNTIME_DIR: &str = "/run/user/1000";
+const STORAGE_MARKER_FILE: &str = ".inspectors-storage.json";
+const STORAGE_OWNER: &str = "inspectors";
+const STORAGE_LAYOUT_VERSION: u8 = 1;
 
 #[derive(Clone)]
 struct AppState {
@@ -213,6 +216,44 @@ struct QemuContainerSpec<'a> {
     disable_kvm: bool,
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct StorageOwnershipMarker {
+    version: u8,
+    owner: String,
+    tier: String,
+    kind: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+    session_id: Option<String>,
+    provider: Option<String>,
+    qemu_profile: Option<String>,
+    container_name: Option<String>,
+    process_id: Option<u32>,
+}
+
+impl StorageOwnershipMarker {
+    fn runtime_session(
+        session_id: &str,
+        provider: &str,
+        qemu_profile: Option<&str>,
+        container_name: Option<&str>,
+        process_id: Option<u32>,
+    ) -> Self {
+        Self {
+            version: STORAGE_LAYOUT_VERSION,
+            owner: STORAGE_OWNER.to_string(),
+            tier: "runtime".to_string(),
+            kind: "session".to_string(),
+            created_at: chrono::Utc::now(),
+            session_id: Some(session_id.to_string()),
+            provider: Some(provider.to_string()),
+            qemu_profile: qemu_profile.map(str::to_string),
+            container_name: container_name.map(str::to_string),
+            process_id,
+        }
+    }
+
+}
+
 #[derive(Clone, Debug)]
 pub struct RuntimeConfig {
     pub bind_host: String,
@@ -307,10 +348,15 @@ pub async fn run(config: RuntimeConfig) {
         qemu_bridge_probe_interval,
     };
 
+    if let Err(error) = ensure_storage_roots(&state.artifacts_root).await {
+        panic!("failed to prepare storage roots: {error}");
+    }
     cleanup_orphaned_qemu_containers().await;
+    janitor_managed_storage(&state.artifacts_root).await;
 
     let app = Router::new()
         .route("/health", get(health))
+        .route("/api/storage/reclaim", axum::routing::post(reclaim_storage))
         .route("/api/sessions", get(list_sessions).post(create_session))
         .route(
             "/api/sessions/{id}",
@@ -338,28 +384,297 @@ pub async fn run(config: RuntimeConfig) {
         .expect("serve guest runtime");
 }
 
+fn artifacts_base_root(runtime_root: &Path) -> PathBuf {
+    runtime_root
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn qemu_cache_root(runtime_root: &Path) -> PathBuf {
+    artifacts_base_root(runtime_root).join("cache").join("qemu")
+}
+
+fn qemu_build_root(runtime_root: &Path) -> PathBuf {
+    qemu_cache_root(runtime_root).join("_build")
+}
+
+fn exports_root(runtime_root: &Path) -> PathBuf {
+    artifacts_base_root(runtime_root).join("exports")
+}
+
+fn storage_marker_path(path: &Path) -> PathBuf {
+    path.join(STORAGE_MARKER_FILE)
+}
+
+async fn ensure_storage_roots(runtime_root: &Path) -> std::io::Result<()> {
+    tokio::fs::create_dir_all(runtime_root).await?;
+    tokio::fs::create_dir_all(qemu_cache_root(runtime_root)).await?;
+    tokio::fs::create_dir_all(qemu_build_root(runtime_root)).await?;
+    tokio::fs::create_dir_all(exports_root(runtime_root)).await?;
+    Ok(())
+}
+
+async fn write_storage_marker(
+    directory: &Path,
+    marker: &StorageOwnershipMarker,
+) -> std::io::Result<()> {
+    let payload = serde_json::to_vec_pretty(marker)
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    tokio::fs::write(
+        storage_marker_path(directory),
+        payload,
+    )
+    .await
+}
+
+fn read_storage_marker(directory: &Path) -> Option<StorageOwnershipMarker> {
+    let marker_path = storage_marker_path(directory);
+    let bytes = std::fs::read(marker_path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn marker_matches_inspectors_layout(marker: &StorageOwnershipMarker) -> bool {
+    marker.owner == STORAGE_OWNER && marker.version == STORAGE_LAYOUT_VERSION
+}
+
+fn process_is_live(process_id: u32) -> bool {
+    Path::new("/proc").join(process_id.to_string()).exists()
+}
+
+async fn docker_container_exists(container_name: &str) -> bool {
+    if !LinuxBackend::tool_exists("docker") {
+        return false;
+    }
+    Command::new("docker")
+        .args(["inspect", container_name])
+        .output()
+        .await
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+async fn can_remove_marker_owned_directory(directory: &Path, marker: &StorageOwnershipMarker) -> bool {
+    if !marker_matches_inspectors_layout(marker) {
+        return false;
+    }
+    if marker.tier == "cache" || marker.tier == "exports" {
+        return false;
+    }
+    if let Some(container_name) = marker.container_name.as_deref()
+        && docker_container_exists(container_name).await
+    {
+        return false;
+    }
+    if let Some(process_id) = marker.process_id
+        && process_is_live(process_id)
+    {
+        return false;
+    }
+    directory.exists()
+}
+
+async fn janitor_runtime_directories(runtime_root: &Path) {
+    let Ok(entries) = std::fs::read_dir(runtime_root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(marker) = read_storage_marker(&path) else {
+            continue;
+        };
+        if can_remove_marker_owned_directory(&path, &marker).await {
+            let _ = tokio::fs::remove_dir_all(&path).await;
+        }
+    }
+}
+
+async fn janitor_qemu_build_directories(runtime_root: &Path) {
+    let build_root = qemu_build_root(runtime_root);
+    let Ok(entries) = std::fs::read_dir(&build_root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(marker) = read_storage_marker(&path) else {
+            continue;
+        };
+        if can_remove_marker_owned_directory(&path, &marker).await {
+            let _ = tokio::fs::remove_dir_all(&path).await;
+        }
+    }
+}
+
+async fn janitor_managed_storage(runtime_root: &Path) {
+    janitor_runtime_directories(runtime_root).await;
+    janitor_qemu_build_directories(runtime_root).await;
+}
+
+fn looks_like_legacy_runtime_directory(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    if Uuid::parse_str(name).is_ok() {
+        return true;
+    }
+    path.join("seed").exists()
+        || path.join("data.img").exists()
+        || path.join("product-boot.qcow2").exists()
+        || path.join("regression-boot.qcow2").exists()
+}
+
+fn looks_like_legacy_build_directory(path: &Path) -> bool {
+    path.join("boot.qcow2").exists() || path.join("seed.iso").exists()
+}
+
+#[derive(serde::Serialize)]
+struct ReclaimCandidate {
+    path: String,
+    tier: String,
+    kind: String,
+    reason: String,
+}
+
+async fn collect_runtime_reclaim_candidates(runtime_root: &Path) -> Vec<ReclaimCandidate> {
+    let Ok(entries) = std::fs::read_dir(runtime_root) else {
+        return Vec::new();
+    };
+    let mut candidates = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if let Some(marker) = read_storage_marker(&path) {
+            if can_remove_marker_owned_directory(&path, &marker).await {
+                candidates.push(ReclaimCandidate {
+                    path: path.to_string_lossy().to_string(),
+                    tier: marker.tier,
+                    kind: marker.kind,
+                    reason: "marker-owned stale runtime state".to_string(),
+                });
+            }
+            continue;
+        }
+        if !looks_like_legacy_runtime_directory(&path) {
+            continue;
+        }
+        let name = path.file_name().and_then(|value| value.to_str()).unwrap_or_default();
+        let derived_container_name = format!("acu-qemu-{}", name.chars().take(12).collect::<String>());
+        if docker_container_exists(&derived_container_name).await {
+            continue;
+        }
+        candidates.push(ReclaimCandidate {
+            path: path.to_string_lossy().to_string(),
+            tier: "runtime".to_string(),
+            kind: "legacy_runtime".to_string(),
+            reason: "legacy inspectors runtime directory without an active container reference".to_string(),
+        });
+    }
+    candidates
+}
+
+async fn collect_build_reclaim_candidates(runtime_root: &Path) -> Vec<ReclaimCandidate> {
+    let build_root = qemu_build_root(runtime_root);
+    let Ok(entries) = std::fs::read_dir(&build_root) else {
+        return Vec::new();
+    };
+    let mut candidates = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if let Some(marker) = read_storage_marker(&path) {
+            if can_remove_marker_owned_directory(&path, &marker).await {
+                candidates.push(ReclaimCandidate {
+                    path: path.to_string_lossy().to_string(),
+                    tier: marker.tier,
+                    kind: marker.kind,
+                    reason: "marker-owned stale qemu prep workdir".to_string(),
+                });
+            }
+            continue;
+        }
+        if looks_like_legacy_build_directory(&path) {
+            candidates.push(ReclaimCandidate {
+                path: path.to_string_lossy().to_string(),
+                tier: "runtime".to_string(),
+                kind: "legacy_prepare_build".to_string(),
+                reason: "legacy qemu prep workdir without ownership marker".to_string(),
+            });
+        }
+    }
+    candidates
+}
+
+#[derive(serde::Deserialize)]
+struct ReclaimStorageRequest {
+    mode: Option<String>,
+}
+
+async fn reclaim_storage(
+    State(state): State<AppState>,
+    Json(request): Json<ReclaimStorageRequest>,
+) -> Response {
+    let apply = request.mode.as_deref() == Some("apply");
+    let mut candidates = collect_runtime_reclaim_candidates(&state.artifacts_root).await;
+    candidates.extend(collect_build_reclaim_candidates(&state.artifacts_root).await);
+
+    let mut reclaimed = Vec::new();
+    if apply {
+        for candidate in &candidates {
+            remove_runtime_directory(Path::new(&candidate.path)).await;
+            reclaimed.push(candidate.path.clone());
+        }
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "mode": if apply { "apply" } else { "report" },
+            "runtime_root": state.artifacts_root,
+            "cache_root": qemu_cache_root(&state.artifacts_root),
+            "exports_root": exports_root(&state.artifacts_root),
+            "candidate_count": candidates.len(),
+            "candidates": candidates,
+            "reclaimed": reclaimed,
+        })),
+    )
+        .into_response()
+}
+
 async fn cleanup_orphaned_qemu_containers() {
     if !LinuxBackend::tool_exists("docker") {
         return;
     }
 
-    let output = Command::new("docker")
-        .args(["ps", "--format", "{{.Names}}", "--filter", "name=acu-qemu-"])
-        .output()
-        .await;
-    let Ok(output) = output else {
-        return;
-    };
-    if !output.status.success() {
-        return;
-    }
-
-    let names = String::from_utf8_lossy(&output.stdout);
-    for container_name in names.lines().map(str::trim).filter(|line| !line.is_empty()) {
-        let _ = Command::new("docker")
-            .args(["rm", "-f", container_name])
+    for prefix in ["acu-qemu-", "acu-image-prep-"] {
+        let output = Command::new("docker")
+            .args(["ps", "-a", "--format", "{{.Names}}", "--filter", &format!("name={prefix}")])
             .output()
             .await;
+        let Ok(output) = output else {
+            continue;
+        };
+        if !output.status.success() {
+            continue;
+        }
+
+        let names = String::from_utf8_lossy(&output.stdout);
+        for container_name in names.lines().map(str::trim).filter(|line| !line.is_empty()) {
+            let _ = Command::new("docker")
+                .args(["rm", "-f", "-v", container_name])
+                .output()
+                .await;
+        }
     }
 }
 
@@ -488,6 +803,54 @@ async fn create_session_impl(
     }
 }
 
+async fn create_session_artifacts_dir(
+    state: &AppState,
+    session_id: &str,
+) -> Result<PathBuf, (StatusCode, Value)> {
+    let artifacts_dir = state.artifacts_root.join(session_id);
+    tokio::fs::create_dir_all(&artifacts_dir)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "code": "artifacts_dir_failed", "message": error.to_string() }),
+            )
+        })?;
+    std::fs::canonicalize(&artifacts_dir).map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "code": "artifacts_dir_canonicalize_failed", "message": error.to_string() }),
+        )
+    })
+}
+
+async fn mark_runtime_session_directory(
+    directory: &Path,
+    session_id: &str,
+    provider: &str,
+    qemu_profile: Option<&str>,
+    container_name: Option<&str>,
+    process_id: Option<u32>,
+) -> Result<(), (StatusCode, Value)> {
+    let marker = StorageOwnershipMarker::runtime_session(
+        session_id,
+        provider,
+        qemu_profile,
+        container_name,
+        process_id,
+    );
+    write_storage_marker(directory, &marker).await.map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "code": "artifacts_marker_failed", "message": error.to_string() }),
+        )
+    })
+}
+
+async fn remove_runtime_directory(path: &Path) {
+    let _ = tokio::fs::remove_dir_all(path).await;
+}
+
 async fn create_xvfb_session(
     state: &AppState,
     request: CreateSessionRequest,
@@ -500,15 +863,7 @@ async fn create_xvfb_session(
     }
 
     let session_id = Uuid::new_v4().to_string();
-    let artifacts_dir = state.artifacts_root.join(&session_id);
-    tokio::fs::create_dir_all(&artifacts_dir)
-        .await
-        .map_err(|error| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                json!({ "code": "artifacts_dir_failed", "message": error.to_string() }),
-            )
-        })?;
+    let artifacts_dir = create_session_artifacts_dir(state, &session_id).await?;
 
     let screen_geometry = format!("{}x{}x24", request.width, request.height);
     let mut selected = None;
@@ -541,17 +896,30 @@ async fn create_xvfb_session(
         break;
     }
 
-    let (display, child) = selected.ok_or_else(|| {
+    let (display, child) = if let Some(selected) = selected {
+        selected
+    } else {
+        remove_runtime_directory(&artifacts_dir).await;
         let message = if let Some((display, status)) = last_status {
             format!("Xvfb exited early on {display}: {status}")
         } else {
             "Xvfb could not find an available display".to_string()
         };
-        (
+        return Err((
             StatusCode::FAILED_DEPENDENCY,
             json!({ "code": "xvfb_early_exit", "message": message }),
-        )
-    })?;
+        ));
+    };
+    let process_id = child.id();
+    if let Err(error) =
+        mark_runtime_session_directory(&artifacts_dir, &session_id, "xvfb", None, None, process_id)
+            .await
+    {
+        let mut child = child;
+        let _ = child.kill().await;
+        remove_runtime_directory(&artifacts_dir).await;
+        return Err(error);
+    }
 
     let backend = LinuxBackend::new(BackendOptions {
         display: display.clone(),
@@ -620,15 +988,9 @@ async fn create_existing_display_session(
         .desktop_runtime_dir
         .clone()
         .or_else(|| std::env::var("XDG_RUNTIME_DIR").ok());
-    let artifacts_dir = state.artifacts_root.join(&session_id);
-    tokio::fs::create_dir_all(&artifacts_dir)
-        .await
-        .map_err(|error| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                json!({ "code": "artifacts_dir_failed", "message": error.to_string() }),
-            )
-        })?;
+    let artifacts_dir = create_session_artifacts_dir(state, &session_id).await?;
+    mark_runtime_session_directory(&artifacts_dir, &session_id, "display", None, None, None)
+        .await?;
 
     let backend = LinuxBackend::new(BackendOptions {
         display: display.clone(),
@@ -700,23 +1062,19 @@ async fn create_qemu_session(
             json!({ "code": "guest_runtime_binary_unavailable", "message": error.to_string() }),
         )
     })?;
-    let artifacts_dir = state.artifacts_root.join(&session_id);
-    tokio::fs::create_dir_all(&artifacts_dir)
-        .await
-        .map_err(|error| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                json!({ "code": "artifacts_dir_failed", "message": error.to_string() }),
-            )
-        })?;
-    let absolute_artifacts_dir = std::fs::canonicalize(&artifacts_dir).map_err(|error| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({ "code": "artifacts_dir_canonicalize_failed", "message": error.to_string() }),
-        )
-    })?;
+    let artifacts_dir = create_session_artifacts_dir(state, &session_id).await?;
+    let absolute_artifacts_dir = artifacts_dir.clone();
 
     let container_name = format!("acu-qemu-{}", &session_id[..12]);
+    mark_runtime_session_directory(
+        &absolute_artifacts_dir,
+        &session_id,
+        "qemu",
+        Some(qemu_profile.as_str()),
+        Some(&container_name),
+        None,
+    )
+    .await?;
     let image = request
         .container_image
         .clone()
@@ -789,6 +1147,7 @@ async fn create_qemu_session(
     let launch_mode = match launch_qemu_container(&container_spec).await {
         Ok(mode) => mode,
         Err(message) => {
+            remove_runtime_directory(&absolute_artifacts_dir).await;
             return Err((
                 StatusCode::FAILED_DEPENDENCY,
                 json!({
@@ -805,7 +1164,8 @@ async fn create_qemu_session(
         let logs = docker_output(&["logs", &container_name])
             .await
             .unwrap_or_default();
-        let _ = docker_output(&["rm", "-f", &container_name]).await;
+        let _ = docker_output(&["rm", "-f", "-v", &container_name]).await;
+        remove_runtime_directory(&absolute_artifacts_dir).await;
         return Err((
             StatusCode::FAILED_DEPENDENCY,
             json!({
@@ -818,16 +1178,21 @@ async fn create_qemu_session(
     let container_ip = docker_container_ip(&container_name).await?;
     let viewer_port = docker_mapped_port(&container_name, state.qemu_viewer_port).await?;
     let runtime_port = docker_mapped_port(&container_name, state.qemu_guest_runtime_port).await?;
-    let viewer_url = resolve_qemu_endpoint(viewer_port, &container_ip, state.qemu_viewer_port)
-        .ok_or_else(|| {
-            (
-                StatusCode::FAILED_DEPENDENCY,
-                json!({
-                    "code": "qemu_container_ip_missing",
-                    "message": "qemu container started but did not expose a viewer port or bridge-network IP",
-                }),
-            )
-        })?;
+    let viewer_url = if let Some(viewer_url) =
+        resolve_qemu_endpoint(viewer_port, &container_ip, state.qemu_viewer_port)
+    {
+        viewer_url
+    } else {
+        let _ = docker_output(&["rm", "-f", "-v", &container_name]).await;
+        remove_runtime_directory(&absolute_artifacts_dir).await;
+        return Err((
+            StatusCode::FAILED_DEPENDENCY,
+            json!({
+                "code": "qemu_container_ip_missing",
+                "message": "qemu container started but did not expose a viewer port or bridge-network IP",
+            }),
+        ));
+    };
     let remote_runtime_url = match launch_mode {
         QemuLaunchMode::PublishedPorts => {
             runtime_port.map(|port| format!("http://127.0.0.1:{port}"))
@@ -1114,7 +1479,7 @@ async fn ensure_qemu_profile_image(
     state: &AppState,
     profile: QemuSessionProfile,
 ) -> Result<PathBuf, (StatusCode, Value)> {
-    let cache_root = state.artifacts_root.join("_qemu_images");
+    let cache_root = qemu_cache_root(&state.artifacts_root);
     tokio::fs::create_dir_all(&cache_root)
         .await
         .map_err(|error| {
@@ -1711,6 +2076,7 @@ async fn delete_session(State(state): State<AppState>, AxumPath(id): AxumPath<St
     let handle = state.sessions.lock().await.remove(&id);
     match handle {
         Some(mut handle) => {
+            let artifacts_dir = PathBuf::from(&handle.record.artifacts_dir);
             if let Some(remote_bridge) = handle.remote_bridge.as_ref() {
                 if let Some(remote_session_id) = remote_bridge.session_id.as_ref() {
                     let _ = state
@@ -1729,9 +2095,10 @@ async fn delete_session(State(state): State<AppState>, AxumPath(id): AxumPath<St
                 }
                 SessionProviderHandle::ExistingDisplay => {}
                 SessionProviderHandle::QemuDocker { container_name } => {
-                    let _ = docker_output(&["rm", "-f", container_name]).await;
+                    let _ = docker_output(&["rm", "-f", "-v", container_name]).await;
                 }
             }
+            remove_runtime_directory(&artifacts_dir).await;
             (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
         }
         None => (

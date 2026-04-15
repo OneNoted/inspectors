@@ -54,6 +54,27 @@ async function startGuestServer() {
       return;
     }
 
+    if (req.method === 'POST' && url.pathname === '/api/storage/reclaim') {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        mode: body.mode ?? 'report',
+        candidate_count: 1,
+        candidates: [
+          {
+            path: '/tmp/inspectors/runtime/stale-session',
+            tier: 'runtime',
+            kind: 'legacy_runtime',
+            reason: 'legacy inspectors runtime directory without an active container reference',
+          },
+        ],
+        reclaimed: body.mode === 'apply' ? ['/tmp/inspectors/runtime/stale-session'] : [],
+      }));
+      return;
+    }
+
     res.writeHead(404, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: 'not found', path: url.pathname }));
   });
@@ -148,6 +169,31 @@ test('qemu product session creation preserves desktop user metadata and live vie
       reason: null,
       refresh_interval_ms: null,
     });
+  } finally {
+    await stopServers(controlPlane, guest.guestServer);
+  }
+});
+
+test('control-plane proxies storage reclaim requests', async () => {
+  const guest = await startGuestServer();
+  const controlPlane = await startControlPlaneServer(0, guest.baseUrl);
+  const baseUrl = `http://127.0.0.1:${(controlPlane.server.address() as { port: number }).port}`;
+
+  try {
+    const response = await fetch(`${baseUrl}/api/storage/reclaim`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: 'apply' }),
+    });
+    assert.equal(response.status, 200);
+    const payload = await response.json() as {
+      mode: string;
+      candidate_count: number;
+      reclaimed: string[];
+    };
+    assert.equal(payload.mode, 'apply');
+    assert.equal(payload.candidate_count, 1);
+    assert.deepEqual(payload.reclaimed, ['/tmp/inspectors/runtime/stale-session']);
   } finally {
     await stopServers(controlPlane, guest.guestServer);
   }

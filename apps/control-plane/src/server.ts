@@ -659,6 +659,16 @@ export function createRequestHandler(state: ControlPlaneState) {
         return;
       }
 
+      if (req.method === 'POST' && url.pathname === '/api/storage/reclaim') {
+        const body = await readJson(req);
+        const upstream = await guestRequest(state, '/api/storage/reclaim', {
+          method: 'POST',
+          body: JSON.stringify(body),
+        });
+        json(res, upstream.status, upstream.payload);
+        return;
+      }
+
       if (req.method === 'GET' && url.pathname === '/api/sessions') {
         const upstream = await guestRequest(state, '/api/sessions');
         if (upstream.status === 200 && Array.isArray(upstream.payload?.sessions)) {

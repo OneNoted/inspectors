@@ -196,6 +196,123 @@ async fn qemu_boot_failures_include_container_logs() {
     runtime.shutdown().await;
 }
 
+#[tokio::test]
+async fn deleting_qemu_sessions_removes_runtime_artifacts() {
+    let _guard = test_lock().lock().await;
+    let fake_bin_dir = TestDir::new("guest-runtime-fake-bin");
+    write_fake_docker(fake_bin_dir.path(), DockerMode::HealthyViewerOnly);
+    let artifacts_dir = TestDir::new("guest-runtime-artifacts");
+    let mut runtime = GuestRuntimeHarness::start(fake_bin_dir.path(), artifacts_dir.path()).await;
+
+    let (create_status, create_payload) = runtime.json_request(
+        "POST",
+        "/api/sessions",
+        Some(&json!({
+            "provider": "qemu",
+            "boot": "alpine",
+            "width": 1280,
+            "height": 720,
+        })),
+    );
+    assert_eq!(
+        create_status, 201,
+        "unexpected create payload: {create_payload}"
+    );
+    let session = &create_payload["session"];
+    let session_id = session["id"].as_str().expect("session id");
+    let session_artifacts = PathBuf::from(
+        session["artifacts_dir"]
+            .as_str()
+            .expect("session artifacts dir"),
+    );
+    fs::write(session_artifacts.join("data.img"), b"artifact").expect("seed artifact");
+    assert!(session_artifacts.exists());
+
+    let (delete_status, delete_payload) =
+        runtime.json_request("DELETE", &format!("/api/sessions/{session_id}"), None);
+    assert_eq!(
+        delete_status, 200,
+        "unexpected delete payload: {delete_payload}"
+    );
+    assert!(
+        !session_artifacts.exists(),
+        "session artifacts dir should be removed after delete"
+    );
+
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn startup_janitor_reaps_marked_runtime_directories() {
+    let _guard = test_lock().lock().await;
+    let fake_bin_dir = TestDir::new("guest-runtime-fake-bin");
+    write_fake_docker(fake_bin_dir.path(), DockerMode::HealthyViewerOnly);
+    let artifacts_dir = TestDir::new("guest-runtime-artifacts");
+    let stale_dir = artifacts_dir.path().join(Uuid::new_v4().to_string());
+    fs::create_dir_all(&stale_dir).expect("create stale dir");
+    fs::write(stale_dir.join("data.img"), b"stale").expect("seed stale data");
+    fs::write(
+        stale_dir.join(".inspectors-storage.json"),
+        serde_json::to_vec_pretty(&json!({
+            "version": 1,
+            "owner": "inspectors",
+            "tier": "runtime",
+            "kind": "session",
+            "created_at": "2026-04-15T08:19:32Z",
+            "session_id": stale_dir.file_name().and_then(|value| value.to_str()),
+            "provider": "qemu",
+            "qemu_profile": "product",
+            "container_name": null,
+            "process_id": null,
+        }))
+        .expect("serialize marker"),
+    )
+    .expect("write marker");
+
+    let mut runtime = GuestRuntimeHarness::start(fake_bin_dir.path(), artifacts_dir.path()).await;
+    assert!(
+        !stale_dir.exists(),
+        "startup janitor should remove stale marked runtime dirs"
+    );
+
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn reclaim_endpoint_reports_and_reclaims_legacy_runtime_state() {
+    let _guard = test_lock().lock().await;
+    let fake_bin_dir = TestDir::new("guest-runtime-fake-bin");
+    write_fake_docker(fake_bin_dir.path(), DockerMode::HealthyViewerOnly);
+    let artifacts_dir = TestDir::new("guest-runtime-artifacts");
+    let legacy_dir = artifacts_dir.path().join(Uuid::new_v4().to_string());
+    fs::create_dir_all(legacy_dir.join("seed")).expect("create legacy seed dir");
+    fs::write(legacy_dir.join("data.img"), b"legacy").expect("write legacy data");
+
+    let mut runtime = GuestRuntimeHarness::start(fake_bin_dir.path(), artifacts_dir.path()).await;
+
+    let (report_status, report_payload) = runtime.json_request(
+        "POST",
+        "/api/storage/reclaim",
+        Some(&json!({ "mode": "report" })),
+    );
+    assert_eq!(report_status, 200, "unexpected report payload: {report_payload}");
+    assert_eq!(report_payload["candidate_count"], 1);
+    assert_eq!(report_payload["candidates"][0]["kind"], "legacy_runtime");
+    assert!(legacy_dir.exists());
+
+    let (apply_status, apply_payload) = runtime.json_request(
+        "POST",
+        "/api/storage/reclaim",
+        Some(&json!({ "mode": "apply" })),
+    );
+    assert_eq!(apply_status, 200, "unexpected apply payload: {apply_payload}");
+    assert_eq!(apply_payload["candidate_count"], 1);
+    assert_eq!(apply_payload["reclaimed"][0], legacy_dir.to_string_lossy().to_string());
+    assert!(!legacy_dir.exists(), "legacy runtime dir should be reclaimed");
+
+    runtime.shutdown().await;
+}
+
 #[derive(Clone, Copy)]
 enum DockerMode {
     HealthyViewerOnly,
@@ -210,6 +327,9 @@ set -eu
 cmd="${1:-}"
 shift || true
 case "$cmd" in
+  ps)
+    exit 0
+    ;;
   run)
     echo "stub-container-id"
     ;;
@@ -242,6 +362,9 @@ set -eu
 cmd="${1:-}"
 shift || true
 case "$cmd" in
+  ps)
+    exit 0
+    ;;
   run)
     echo "stub-container-id"
     ;;
