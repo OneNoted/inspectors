@@ -41,6 +41,19 @@ function updateProviderOptions() {
   qemuOptions.hidden = !isQemu;
 }
 
+function clearLocalSelection() {
+  sessionId = null;
+  taskId = null;
+  existingSessionInput.value = '';
+  syncSessionLocation();
+  sessionSummary.textContent = 'No session';
+  sessionMeta.textContent = 'No session';
+  observation.textContent = '';
+  historyEl.textContent = '';
+  tasksEl.textContent = '';
+  resetDesktopState();
+}
+
 function syncSessionLocation() {
   const nextUrl = buildSessionUrl(sessionId);
   window.history.replaceState({}, '', nextUrl);
@@ -211,6 +224,15 @@ document.getElementById('create-session').addEventListener('click', async () => 
 });
 
 document.getElementById('refresh-session').addEventListener('click', refresh);
+document.getElementById('delete-session').addEventListener('click', async () => {
+  if (!sessionId) {
+    sessionSummary.textContent = 'Select a session before deleting it.';
+    return;
+  }
+  await json(`/api/sessions/${sessionId}`, { method: 'DELETE' });
+  clearLocalSelection();
+  await refreshSessionPicker();
+});
 document.getElementById('attach-session').addEventListener('click', async () => {
   const nextSessionId = parseSessionReference(existingSessionInput.value);
   if (!nextSessionId) {
@@ -228,17 +250,15 @@ sessionPicker?.addEventListener('change', async () => {
   existingSessionInput.value = sessionId;
   await refresh();
 });
-document.getElementById('clear-session').addEventListener('click', () => {
-  sessionId = null;
-  taskId = null;
-  existingSessionInput.value = '';
-  syncSessionLocation();
-  sessionSummary.textContent = 'No session';
-  sessionMeta.textContent = 'No session';
-  observation.textContent = '';
-  historyEl.textContent = '';
-  tasksEl.textContent = '';
-  resetDesktopState();
+document.getElementById('clear-session').addEventListener('click', clearLocalSelection);
+document.getElementById('reclaim-storage')?.addEventListener('click', async () => {
+  const payload = await json('/api/storage/reclaim', {
+    method: 'POST',
+    body: JSON.stringify({ mode: 'apply' }),
+  });
+  tasksEl.textContent = JSON.stringify(payload, null, 2);
+  sessionSummary.textContent = `reclaim=${payload.reclaimed?.length ?? 0} · candidates=${payload.candidate_count ?? 0}`;
+  await refreshSessionPicker();
 });
 providerSelect.addEventListener('change', updateProviderOptions);
 updateProviderOptions();

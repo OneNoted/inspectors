@@ -22,3 +22,16 @@ test('session picker is rendered for choosing running sessions', () => {
   assert.match(html, /<label for="session-picker">Choose running session<\/label>/);
   assert.match(html, /<select id="session-picker">/);
 });
+
+test('default session flow emphasizes the qemu happy path', () => {
+  assert.match(html, /Default path: create a QEMU product session, watch the live desktop, and delete it when you are done\./);
+  assert.match(html, /<button id="create-session" class="btn btn-primary">Start default session<\/button>/);
+  assert.match(html, /<button id="delete-session" type="button" class="btn">Delete session<\/button>/);
+});
+
+test('advanced controls keep debug-only actions out of the default path', () => {
+  assert.match(html, /<details class="collapsible" id="advanced-controls">/);
+  assert.match(html, /<summary><span class="summary-label">Advanced \/ debug<\/span><\/summary>/);
+  assert.match(html, /<button id="reclaim-storage" type="button" class="btn btn-ghost">Reclaim stale storage<\/button>/);
+  assert.match(html, /<summary><span class="summary-label">Manual action \(advanced\)<\/span><\/summary>/);
+});

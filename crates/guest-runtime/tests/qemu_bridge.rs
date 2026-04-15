@@ -295,7 +295,10 @@ async fn reclaim_endpoint_reports_and_reclaims_legacy_runtime_state() {
         "/api/storage/reclaim",
         Some(&json!({ "mode": "report" })),
     );
-    assert_eq!(report_status, 200, "unexpected report payload: {report_payload}");
+    assert_eq!(
+        report_status, 200,
+        "unexpected report payload: {report_payload}"
+    );
     assert_eq!(report_payload["candidate_count"], 1);
     assert_eq!(report_payload["candidates"][0]["kind"], "legacy_runtime");
     assert!(legacy_dir.exists());
@@ -305,10 +308,71 @@ async fn reclaim_endpoint_reports_and_reclaims_legacy_runtime_state() {
         "/api/storage/reclaim",
         Some(&json!({ "mode": "apply" })),
     );
-    assert_eq!(apply_status, 200, "unexpected apply payload: {apply_payload}");
+    assert_eq!(
+        apply_status, 200,
+        "unexpected apply payload: {apply_payload}"
+    );
     assert_eq!(apply_payload["candidate_count"], 1);
-    assert_eq!(apply_payload["reclaimed"][0], legacy_dir.to_string_lossy().to_string());
-    assert!(!legacy_dir.exists(), "legacy runtime dir should be reclaimed");
+    assert_eq!(
+        apply_payload["reclaimed"][0],
+        legacy_dir.to_string_lossy().to_string()
+    );
+    assert!(
+        !legacy_dir.exists(),
+        "legacy runtime dir should be reclaimed"
+    );
+
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn reclaim_endpoint_does_not_reap_active_sessions() {
+    let _guard = test_lock().lock().await;
+    let fake_bin_dir = TestDir::new("guest-runtime-fake-bin");
+    write_fake_docker(fake_bin_dir.path(), DockerMode::HealthyViewerOnly);
+    let artifacts_dir = TestDir::new("guest-runtime-artifacts");
+    let legacy_dir = artifacts_dir.path().join(Uuid::new_v4().to_string());
+    fs::create_dir_all(legacy_dir.join("seed")).expect("create legacy seed dir");
+    fs::write(legacy_dir.join("data.img"), b"legacy").expect("write legacy data");
+
+    let mut runtime = GuestRuntimeHarness::start(fake_bin_dir.path(), artifacts_dir.path()).await;
+    let (create_status, create_payload) = runtime.json_request(
+        "POST",
+        "/api/sessions",
+        Some(&json!({
+            "provider": "display",
+            "display": ":0",
+        })),
+    );
+    assert_eq!(
+        create_status, 201,
+        "unexpected create payload: {create_payload}"
+    );
+    let active_dir = PathBuf::from(
+        create_payload["session"]["artifacts_dir"]
+            .as_str()
+            .expect("active artifacts dir"),
+    );
+    assert!(active_dir.exists(), "active session artifacts should exist");
+
+    let (apply_status, apply_payload) = runtime.json_request(
+        "POST",
+        "/api/storage/reclaim",
+        Some(&json!({ "mode": "apply" })),
+    );
+    assert_eq!(
+        apply_status, 200,
+        "unexpected apply payload: {apply_payload}"
+    );
+    assert_eq!(apply_payload["candidate_count"], 1);
+    assert_eq!(
+        apply_payload["reclaimed"][0],
+        legacy_dir.to_string_lossy().to_string()
+    );
+    assert!(
+        active_dir.exists(),
+        "active session artifacts should not be reclaimed"
+    );
 
     runtime.shutdown().await;
 }

@@ -16,7 +16,11 @@
 - **Current supported product guest:** Ubuntu 24.04 + GNOME.
 - **Current internal regression fixture:** lighter QEMU image using the same guest-runtime protocol.
 - **Operator/debug path:** expose a canonical `live_desktop_view` route for product oversight, while retaining raw `viewer_url` for debugging.
-- Each session gets its own artifact directory.
+- Storage is tiered:
+  - `runtime/` = session-owned and ephemeral
+  - `cache/` = reusable qemu image assets
+  - `exports/` = explicit retained artifacts/evidence
+- Each session gets its own runtime artifact directory under the ephemeral tier.
 
 ## Observation strategy
 - Screenshot-first.
@@ -42,4 +46,5 @@
   - `failed`
 - Guest bootstrap must be deterministic enough to promote sessions to `runtime_ready` automatically.
 - QEMU bootstrap/health failures must emit actionable artifacts/logs.
+- Startup cleanup should only reap inspectors-owned runtime state after liveness checks; reusable cache and explicit exports are excluded.
 - Future work can replace the transport with vsock/VM-native plumbing without changing the external contract.

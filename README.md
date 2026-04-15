@@ -32,6 +32,18 @@ Agent Computer Use Platform gives agents a real Linux desktop to work in, with s
 - Gives you one place to work with screenshots, shell commands, files, desktop input, and session state.
 - Keeps operators in the loop with a live desktop view, structured receipts, and clear fallback modes.
 
+## Default flow
+
+The default happy path is now:
+
+1. Start a session with default settings (`qemu` + `product`)
+2. Wait for readiness
+3. Submit a task
+4. Watch `live_desktop_view` or the truthful screenshot fallback
+5. Delete the session when done unless you explicitly export evidence
+
+That is the workflow agents should infer first. Advanced/debug controls still exist, but they are secondary.
+
 ## Quickstart
 
 ```bash

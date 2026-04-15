@@ -25,6 +25,9 @@ function resolveUiRoot() {
 function resolveArtifactRoot() {
     return resolve(process.env.ACU_ARTIFACT_ROOT ?? join(repoRoot, 'artifacts'));
 }
+function resolveExportRoot(artifactRoot) {
+    return join(artifactRoot, 'exports');
+}
 async function loadPlaywrightModule() {
     if (!playwrightEnabled) {
         throw new Error('playwright browser adapter is disabled in this environment');
@@ -246,6 +249,30 @@ async function fetchBrowserSnapshot(url) {
         return null;
     }
     return null;
+}
+function getDesktopActivateArgs() {
+    const raw = process.env.ACU_DESKTOP_ACTIVATE_ARGS_JSON;
+    if (!raw)
+        return [];
+    try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed.filter((value) => typeof value === 'string') : [];
+    }
+    catch {
+        return [];
+    }
+}
+async function maybeActivateDesktop(session) {
+    const activateBin = process.env.ACU_DESKTOP_ACTIVATE_BIN;
+    if (!activateBin)
+        return;
+    const liveDesktopView = withLiveDesktopView(session).live_desktop_view;
+    if (!liveDesktopView || liveDesktopView.mode !== 'stream')
+        return;
+    if (session.provider !== 'qemu' || session.qemu_profile === 'regression')
+        return;
+    const args = [...getDesktopActivateArgs(), '--activate-desktop', '--session', session.id];
+    await execFileAsync(activateBin, args);
 }
 async function guestRequest(state, path, init) {
     const response = await fetch(`${state.guestRuntimeUrl}${path}`, {
@@ -530,7 +557,7 @@ async function handleBrowserAction(state, sessionId, action) {
             }
             break;
         case 'browser_screenshot': {
-            const path = join(state.artifactRoot, `${sessionId}-${Date.now()}-browser.png`);
+            const path = join(resolveExportRoot(state.artifactRoot), `${sessionId}-${Date.now()}-browser.png`);
             await mkdir(dirname(path), { recursive: true });
             await browser.page.screenshot({ path, fullPage: true });
             result = { path };
@@ -600,6 +627,15 @@ export function createRequestHandler(state) {
                 });
                 return;
             }
+            if (req.method === 'POST' && url.pathname === '/api/storage/reclaim') {
+                const body = await readJson(req);
+                const upstream = await guestRequest(state, '/api/storage/reclaim', {
+                    method: 'POST',
+                    body: JSON.stringify(body),
+                });
+                json(res, upstream.status, upstream.payload);
+                return;
+            }
             if (req.method === 'GET' && url.pathname === '/api/sessions') {
                 const upstream = await guestRequest(state, '/api/sessions');
                 if (upstream.status === 200 && Array.isArray(upstream.payload?.sessions)) {
@@ -621,6 +657,7 @@ export function createRequestHandler(state) {
                 });
                 if (upstream.status === 201 && upstream.payload?.session) {
                     upstream.payload.session = withLiveDesktopView(upstream.payload.session);
+                    await maybeActivateDesktop(upstream.payload.session).catch(() => undefined);
                 }
                 json(res, upstream.status, upstream.payload);
                 return;
@@ -883,6 +920,7 @@ export async function startControlPlaneServer(port = Number(process.env.PORT ?? 
     const uiRoot = resolveUiRoot();
     const artifactRoot = resolveArtifactRoot();
     await mkdir(artifactRoot, { recursive: true });
+    await mkdir(resolveExportRoot(artifactRoot), { recursive: true });
     const state = {
         guestRuntimeUrl,
         uiRoot,

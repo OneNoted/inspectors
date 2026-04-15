@@ -152,6 +152,16 @@ export interface SessionRecord {
   bridge_error?: StructuredError | null;
 }
 
+export interface ReclaimStorageResponse {
+  mode: 'report' | 'apply';
+  runtime_root: string;
+  cache_root: string;
+  exports_root: string;
+  candidate_count: number;
+  candidates: { path: string; tier: string; kind: string; reason: string }[];
+  reclaimed: string[];
+}
+
 export class ComputerUseClient {
   constructor(private readonly baseUrl = 'http://127.0.0.1:3000') {}
 
@@ -168,6 +178,10 @@ export class ComputerUseClient {
 
   listAdapters() {
     return this.request<{ adapters: JsonValue[] }>('/api/adapters');
+  }
+
+  reclaimStorage(mode: 'report' | 'apply' = 'report') {
+    return this.request<ReclaimStorageResponse>('/api/storage/reclaim', { method: 'POST', body: JSON.stringify({ mode }) });
   }
 
   createSession(request: CreateSessionRequest = {}) {

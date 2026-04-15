@@ -5,6 +5,26 @@
 ### `GET /api/health`
 Returns control-plane health plus guest-runtime health.
 
+### `POST /api/storage/reclaim`
+Report or reclaim stale inspectors-managed storage.
+
+Request body:
+```json
+{
+  "mode": "report"
+}
+```
+
+Use `"apply"` to remove reclaim candidates instead of only reporting them.
+
+Response includes:
+- `runtime_root`
+- `cache_root`
+- `exports_root`
+- `candidate_count`
+- `candidates[]`
+- `reclaimed[]`
+
 ### `POST /api/sessions`
 Create a sandbox session.
 
@@ -62,6 +82,11 @@ QEMU sessions may include:
 ### `DELETE /api/sessions/:id`
 Stop the session and clean up child processes/containers.
 
+Default storage semantics:
+- session-owned runtime storage is deleted on normal teardown,
+- reusable qemu assets stay under cache,
+- retained evidence should be treated as explicit export/pin state.
+
 ### `GET /api/sessions/:id/observation`
 Return the latest desktop observation, including `summary`, `raw`, screenshot metadata, and action history.
 
@@ -106,6 +131,16 @@ Example GUI-safe Taskers launch in a qemu `product` guest:
 
 ### `POST /api/tasks`
 Create a task bound to a session.
+
+## Canonical minimal agent workflow
+
+The simplest supported workflow is:
+
+1. `POST /api/sessions` with provider omitted
+2. `GET /api/sessions/:id` until the session is actionable
+3. `POST /api/tasks` or `POST /api/sessions/:id/actions`
+4. Observe `live_desktop_view` / `GET /api/sessions/:id/observation`
+5. `DELETE /api/sessions/:id` unless you explicitly want to retain exported evidence
 
 ### `GET /api/tasks/:id`
 Read task status and latest receipt.

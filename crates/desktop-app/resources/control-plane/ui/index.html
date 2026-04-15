@@ -94,45 +94,55 @@
               <svg class="icon"><use href="#icon-cube"/></svg>
               <h3>Session</h3>
             </div>
-            <div class="field">
-              <label for="session-provider">Provider</label>
-              <select id="session-provider">
-                <option value="qemu" selected>QEMU VM</option>
-                <option value="xvfb">Local Xvfb</option>
-              </select>
+            <p class="helper-text">Default path: create a QEMU product session, watch the live desktop, and delete it when you are done.</p>
+            <div class="btn-row">
+              <button id="create-session" class="btn btn-primary">Start default session</button>
+              <button id="delete-session" type="button" class="btn">Delete session</button>
+              <button id="clear-session" type="button" class="btn btn-ghost">Clear local selection</button>
             </div>
-            <div class="collapse">
-              <div class="collapse-inner">
-                <div id="qemu-options" hidden>
-                  <div class="field">
-                    <label for="qemu-profile">QEMU profile</label>
-                    <select id="qemu-profile">
-                      <option value="product" selected>Product guest (Ubuntu + GNOME)</option>
-                      <option value="regression">Regression fixture</option>
-                    </select>
-                  </div>
-                  <div class="field">
-                    <label for="shared-host-path">Shared host path</label>
-                    <input id="shared-host-path" type="text" value="" placeholder="../taskers" />
+            <details class="collapsible" id="advanced-controls">
+              <summary><span class="summary-label">Advanced / debug</span></summary>
+              <div class="collapsible-body">
+                <div class="field">
+                  <label for="session-provider">Provider</label>
+                  <select id="session-provider">
+                    <option value="qemu" selected>QEMU VM</option>
+                    <option value="xvfb">Local Xvfb</option>
+                  </select>
+                </div>
+                <div class="collapse">
+                  <div class="collapse-inner">
+                    <div id="qemu-options" hidden>
+                      <div class="field">
+                        <label for="qemu-profile">QEMU profile</label>
+                        <select id="qemu-profile">
+                          <option value="product" selected>Product guest (Ubuntu + GNOME)</option>
+                          <option value="regression">Regression fixture</option>
+                        </select>
+                      </div>
+                      <div class="field">
+                        <label for="shared-host-path">Shared host path</label>
+                        <input id="shared-host-path" type="text" value="" placeholder="../taskers" />
+                      </div>
+                    </div>
                   </div>
                 </div>
+                <div class="field">
+                  <label for="existing-session">Attach existing session</label>
+                  <input id="existing-session" type="text" placeholder="session id or live-view URL" />
+                </div>
+                <div class="field">
+                  <label for="session-picker">Choose running session</label>
+                  <select id="session-picker">
+                    <option value="">Select a running session</option>
+                  </select>
+                </div>
+                <div class="btn-row">
+                  <button id="attach-session" class="btn">Attach</button>
+                  <button id="reclaim-storage" type="button" class="btn btn-ghost">Reclaim stale storage</button>
+                </div>
               </div>
-            </div>
-            <div class="field">
-              <label for="existing-session">Attach existing session</label>
-              <input id="existing-session" type="text" placeholder="session id or live-view URL" />
-            </div>
-            <div class="field">
-              <label for="session-picker">Choose running session</label>
-              <select id="session-picker">
-                <option value="">Select a running session</option>
-              </select>
-            </div>
-            <div class="btn-row">
-              <button id="create-session" class="btn btn-primary">Create</button>
-              <button id="attach-session" class="btn">Attach</button>
-              <button id="clear-session" type="button" class="btn btn-ghost">Clear</button>
-            </div>
+            </details>
           </section>
 
           <!-- TASK -->
@@ -158,23 +168,22 @@
           </section>
 
           <!-- ACTION -->
-          <section class="group">
-            <div class="group-header">
-              <svg class="icon"><use href="#icon-terminal"/></svg>
-              <h3>Manual action</h3>
-            </div>
-            <div class="field">
-              <label for="action-payload">Payload</label>
-              <textarea id="action-payload" class="code" spellcheck="false">{
+          <details class="collapsible">
+            <summary><span class="summary-label">Manual action (advanced)</span></summary>
+            <div class="collapsible-body">
+              <div class="field">
+                <label for="action-payload">Payload</label>
+                <textarea id="action-payload" class="code" spellcheck="false">{
   "kind": "run_command",
   "command": "echo ready",
   "run_as_user": "desktop"
 }</textarea>
+              </div>
+              <div class="btn-row">
+                <button id="run-action" class="btn btn-primary">Run action</button>
+              </div>
             </div>
-            <div class="btn-row">
-              <button id="run-action" class="btn btn-primary">Run action</button>
-            </div>
-          </section>
+          </details>
 
           <!-- Collapsible inspection blocks -->
           <div class="details-stack">

@@ -251,7 +251,6 @@ impl StorageOwnershipMarker {
             process_id,
         }
     }
-
 }
 
 #[derive(Clone, Debug)]
@@ -422,11 +421,7 @@ async fn write_storage_marker(
 ) -> std::io::Result<()> {
     let payload = serde_json::to_vec_pretty(marker)
         .map_err(|error| std::io::Error::other(error.to_string()))?;
-    tokio::fs::write(
-        storage_marker_path(directory),
-        payload,
-    )
-    .await
+    tokio::fs::write(storage_marker_path(directory), payload).await
 }
 
 fn read_storage_marker(directory: &Path) -> Option<StorageOwnershipMarker> {
@@ -455,7 +450,10 @@ async fn docker_container_exists(container_name: &str) -> bool {
         .unwrap_or(false)
 }
 
-async fn can_remove_marker_owned_directory(directory: &Path, marker: &StorageOwnershipMarker) -> bool {
+async fn can_remove_marker_owned_directory(
+    directory: &Path,
+    marker: &StorageOwnershipMarker,
+) -> bool {
     if !marker_matches_inspectors_layout(marker) {
         return false;
     }
@@ -542,7 +540,10 @@ struct ReclaimCandidate {
     reason: String,
 }
 
-async fn collect_runtime_reclaim_candidates(runtime_root: &Path) -> Vec<ReclaimCandidate> {
+async fn collect_runtime_reclaim_candidates(
+    runtime_root: &Path,
+    active_session_ids: &BTreeSet<String>,
+) -> Vec<ReclaimCandidate> {
     let Ok(entries) = std::fs::read_dir(runtime_root) else {
         return Vec::new();
     };
@@ -553,6 +554,13 @@ async fn collect_runtime_reclaim_candidates(runtime_root: &Path) -> Vec<ReclaimC
             continue;
         }
         if let Some(marker) = read_storage_marker(&path) {
+            if marker
+                .session_id
+                .as_ref()
+                .is_some_and(|session_id| active_session_ids.contains(session_id))
+            {
+                continue;
+            }
             if can_remove_marker_owned_directory(&path, &marker).await {
                 candidates.push(ReclaimCandidate {
                     path: path.to_string_lossy().to_string(),
@@ -566,8 +574,15 @@ async fn collect_runtime_reclaim_candidates(runtime_root: &Path) -> Vec<ReclaimC
         if !looks_like_legacy_runtime_directory(&path) {
             continue;
         }
-        let name = path.file_name().and_then(|value| value.to_str()).unwrap_or_default();
-        let derived_container_name = format!("acu-qemu-{}", name.chars().take(12).collect::<String>());
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        if active_session_ids.contains(name) {
+            continue;
+        }
+        let derived_container_name =
+            format!("acu-qemu-{}", name.chars().take(12).collect::<String>());
         if docker_container_exists(&derived_container_name).await {
             continue;
         }
@@ -575,7 +590,8 @@ async fn collect_runtime_reclaim_candidates(runtime_root: &Path) -> Vec<ReclaimC
             path: path.to_string_lossy().to_string(),
             tier: "runtime".to_string(),
             kind: "legacy_runtime".to_string(),
-            reason: "legacy inspectors runtime directory without an active container reference".to_string(),
+            reason: "legacy inspectors runtime directory without an active container reference"
+                .to_string(),
         });
     }
     candidates
@@ -625,7 +641,15 @@ async fn reclaim_storage(
     Json(request): Json<ReclaimStorageRequest>,
 ) -> Response {
     let apply = request.mode.as_deref() == Some("apply");
-    let mut candidates = collect_runtime_reclaim_candidates(&state.artifacts_root).await;
+    let active_session_ids = state
+        .sessions
+        .lock()
+        .await
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut candidates =
+        collect_runtime_reclaim_candidates(&state.artifacts_root, &active_session_ids).await;
     candidates.extend(collect_build_reclaim_candidates(&state.artifacts_root).await);
 
     let mut reclaimed = Vec::new();
@@ -658,7 +682,14 @@ async fn cleanup_orphaned_qemu_containers() {
 
     for prefix in ["acu-qemu-", "acu-image-prep-"] {
         let output = Command::new("docker")
-            .args(["ps", "-a", "--format", "{{.Names}}", "--filter", &format!("name={prefix}")])
+            .args([
+                "ps",
+                "-a",
+                "--format",
+                "{{.Names}}",
+                "--filter",
+                &format!("name={prefix}"),
+            ])
             .output()
             .await;
         let Ok(output) = output else {
@@ -839,12 +870,14 @@ async fn mark_runtime_session_directory(
         container_name,
         process_id,
     );
-    write_storage_marker(directory, &marker).await.map_err(|error| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({ "code": "artifacts_marker_failed", "message": error.to_string() }),
-        )
-    })
+    write_storage_marker(directory, &marker)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "code": "artifacts_marker_failed", "message": error.to_string() }),
+            )
+        })
 }
 
 async fn remove_runtime_directory(path: &Path) {

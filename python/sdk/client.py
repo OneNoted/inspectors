@@ -26,6 +26,9 @@ class ComputerUseClient:
     def list_adapters(self) -> Any:
         return self._request("/api/adapters")
 
+    def reclaim_storage(self, mode: str = "report") -> Any:
+        return self._request("/api/storage/reclaim", "POST", {"mode": mode})
+
     def create_session(self, provider: str = "qemu", width: int = 1440, height: int = 900, **options: Any) -> Any:
         payload = {"provider": provider, "width": width, "height": height, **options}
         return self._request("/api/sessions", "POST", payload)
