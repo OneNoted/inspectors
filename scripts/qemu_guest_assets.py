@@ -37,7 +37,13 @@ def ensure_dir(path: Path) -> Path:
     return path
 
 
-def write_storage_marker(path: Path, profile: str) -> None:
+def write_storage_marker(
+    path: Path,
+    profile: str,
+    *,
+    container_name: str | None = None,
+    process_id: int | None = None,
+) -> None:
     payload = {
         "version": 1,
         "owner": "inspectors",
@@ -46,6 +52,8 @@ def write_storage_marker(path: Path, profile: str) -> None:
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "provider": "qemu",
         "qemu_profile": profile,
+        "container_name": container_name,
+        "process_id": process_id,
     }
     (path / STORAGE_MARKER_FILE).write_text(json.dumps(payload, indent=2))
 
@@ -304,7 +312,7 @@ def ensure_image(profile: str, cache_root: Path, guest_runtime_binary: Path, qem
     work_dir = Path(
         tempfile.mkdtemp(prefix=f"acu-qemu-{profile}-", dir=str(ensure_dir(cache_root / "_build")))
     )
-    write_storage_marker(work_dir, profile)
+    write_storage_marker(work_dir, profile, process_id=os.getpid())
     build_image = work_dir / "boot.qcow2"
     shutil.copy2(base_image, build_image)
     resize_qcow2(qemu_image, build_image, PROFILE_DISK_GB[profile])
@@ -325,6 +333,12 @@ def ensure_image(profile: str, cache_root: Path, guest_runtime_binary: Path, qem
     seed_iso = build_seed_iso(qemu_image, work_dir, user_data, meta_data)
 
     container_name = f"acu-image-prep-{profile}-{int(time.time())}"
+    write_storage_marker(
+        work_dir,
+        profile,
+        container_name=container_name,
+        process_id=os.getpid(),
+    )
     cmd = [
         "docker",
         "run",

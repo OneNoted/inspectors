@@ -937,8 +937,9 @@ async fn reclaim_storage(
     let mut reclaimed = Vec::new();
     if apply {
         for candidate in &candidates {
-            remove_runtime_directory(Path::new(&candidate.path)).await;
-            reclaimed.push(candidate.path.clone());
+            if try_remove_runtime_directory(Path::new(&candidate.path)).await {
+                reclaimed.push(candidate.path.clone());
+            }
         }
     }
 
@@ -966,18 +967,19 @@ async fn cleanup_orphaned_qemu_containers() {
         return;
     }
 
-    for prefix in ["acu-qemu-", "acu-image-prep-"] {
-        let output = Command::new("docker")
-            .args([
-                "ps",
-                "-a",
-                "--format",
-                "{{.Names}}",
-                "--filter",
-                &format!("name={prefix}"),
-            ])
-            .output()
-            .await;
+    for (prefix, exited_only) in [("acu-qemu-", false), ("acu-image-prep-", true)] {
+        let mut args = vec![
+            "ps".to_string(),
+            "-a".to_string(),
+            "--format".to_string(),
+            "{{.Names}}".to_string(),
+            "--filter".to_string(),
+            format!("name={prefix}"),
+        ];
+        if exited_only {
+            args.extend(["--filter".to_string(), "status=exited".to_string()]);
+        }
+        let output = Command::new("docker").args(&args).output().await;
         let Ok(output) = output else {
             continue;
         };
@@ -1168,6 +1170,10 @@ async fn mark_runtime_session_directory(
 
 async fn remove_runtime_directory(path: &Path) {
     let _ = tokio::fs::remove_dir_all(path).await;
+}
+
+async fn try_remove_runtime_directory(path: &Path) -> bool {
+    tokio::fs::remove_dir_all(path).await.is_ok()
 }
 
 fn new_review_manifest(record: &SessionRecord) -> ReviewBundleManifest {

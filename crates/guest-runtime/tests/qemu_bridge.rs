@@ -279,6 +279,25 @@ async fn startup_janitor_reaps_marked_runtime_directories() {
 }
 
 #[tokio::test]
+async fn startup_janitor_does_not_kill_running_prepare_containers() {
+    let _guard = test_lock().lock().await;
+    let fake_bin_dir = TestDir::new("guest-runtime-fake-bin");
+    write_fake_docker(fake_bin_dir.path(), DockerMode::RunningPrepareContainer);
+    let artifacts_dir = TestDir::new("guest-runtime-artifacts");
+
+    let mut runtime = GuestRuntimeHarness::start(fake_bin_dir.path(), artifacts_dir.path()).await;
+    let docker_log =
+        fs::read_to_string(fake_bin_dir.path().join("docker.log")).expect("read fake docker log");
+
+    assert!(
+        !docker_log.contains("rm -f -v acu-image-prep-product-live"),
+        "startup cleanup should not remove running prepare containers: {docker_log}"
+    );
+
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
 async fn reclaim_endpoint_reports_and_reclaims_legacy_runtime_state() {
     let _guard = test_lock().lock().await;
     let fake_bin_dir = TestDir::new("guest-runtime-fake-bin");
@@ -408,10 +427,115 @@ async fn reclaim_endpoint_does_not_reap_active_sessions() {
     runtime.shutdown().await;
 }
 
+#[tokio::test]
+async fn reclaim_endpoint_does_not_reap_live_prepare_build_dirs() {
+    let _guard = test_lock().lock().await;
+    let fake_bin_dir = TestDir::new("guest-runtime-fake-bin");
+    write_fake_docker(fake_bin_dir.path(), DockerMode::HealthyViewerOnly);
+    let workspace = TestDir::new("guest-runtime-workspace");
+    let runtime_root = workspace.path().join("runtime");
+    fs::create_dir_all(&runtime_root).expect("create runtime root");
+    let live_build_dir = workspace
+        .path()
+        .join("cache")
+        .join("qemu")
+        .join("_build")
+        .join("acu-qemu-product-live");
+    fs::create_dir_all(&live_build_dir).expect("create live build dir");
+    fs::write(live_build_dir.join("boot.qcow2"), b"live-build").expect("write build image");
+    fs::write(
+        live_build_dir.join(".inspectors-storage.json"),
+        serde_json::to_vec_pretty(&json!({
+            "version": 1,
+            "owner": "inspectors",
+            "tier": "runtime",
+            "kind": "prepare_build",
+            "created_at": "2026-04-15T08:19:32Z",
+            "provider": "qemu",
+            "qemu_profile": "product",
+            "container_name": null,
+            "process_id": std::process::id(),
+        }))
+        .expect("serialize marker"),
+    )
+    .expect("write marker");
+
+    let mut runtime = GuestRuntimeHarness::start(fake_bin_dir.path(), &runtime_root).await;
+
+    let (report_status, report_payload) = runtime.json_request(
+        "POST",
+        "/api/storage/reclaim",
+        Some(&json!({ "mode": "report" })),
+    );
+    assert_eq!(
+        report_status, 200,
+        "unexpected report payload: {report_payload}"
+    );
+    assert_eq!(report_payload["candidate_count"], 0);
+    assert!(
+        live_build_dir.exists(),
+        "live prepare build dir should remain"
+    );
+
+    runtime.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn reclaim_endpoint_only_reports_successful_removals() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _guard = test_lock().lock().await;
+    let fake_bin_dir = TestDir::new("guest-runtime-fake-bin");
+    write_fake_docker(fake_bin_dir.path(), DockerMode::HealthyViewerOnly);
+    let workspace = TestDir::new("guest-runtime-workspace");
+    let runtime_root = workspace.path().join("runtime");
+    fs::create_dir_all(&runtime_root).expect("create runtime root");
+
+    let mut runtime = GuestRuntimeHarness::start(fake_bin_dir.path(), &runtime_root).await;
+
+    let legacy_dir = runtime_root.join(Uuid::new_v4().to_string());
+    fs::create_dir_all(legacy_dir.join("seed")).expect("create legacy seed dir");
+    fs::write(legacy_dir.join("data.img"), b"legacy").expect("write legacy data");
+
+    let original_permissions = fs::metadata(&runtime_root)
+        .expect("runtime root metadata")
+        .permissions();
+    let mut readonly_permissions = original_permissions.clone();
+    readonly_permissions.set_mode(0o555);
+    fs::set_permissions(&runtime_root, readonly_permissions).expect("make runtime root readonly");
+
+    let (apply_status, apply_payload) = runtime.json_request(
+        "POST",
+        "/api/storage/reclaim",
+        Some(&json!({ "mode": "apply" })),
+    );
+
+    fs::set_permissions(&runtime_root, original_permissions).expect("restore runtime root perms");
+
+    assert_eq!(
+        apply_status, 200,
+        "unexpected apply payload: {apply_payload}"
+    );
+    assert_eq!(apply_payload["candidate_count"], 1);
+    assert_eq!(
+        apply_payload["reclaimed"].as_array().map(Vec::len),
+        Some(0),
+        "failed deletions should not be reported as reclaimed"
+    );
+    assert!(
+        legacy_dir.exists(),
+        "legacy dir should remain after failed removal"
+    );
+
+    runtime.shutdown().await;
+}
+
 #[derive(Clone, Copy)]
 enum DockerMode {
     HealthyViewerOnly,
     BootFailure,
+    RunningPrepareContainer,
 }
 
 fn write_fake_docker(dir: &Path, mode: DockerMode) {
@@ -475,6 +599,49 @@ case "$cmd" in
     ;;
   logs)
     echo "guest bootstrap failed: runtime health check timed out"
+    ;;
+  rm)
+    echo "removed"
+    ;;
+  *)
+    echo "unexpected docker command: $cmd $*" >&2
+    exit 1
+    ;;
+esac
+"#
+        }
+        DockerMode::RunningPrepareContainer => {
+            r#"#!/bin/sh
+set -eu
+cmd="${1:-}"
+shift || true
+echo "$cmd $*" >> "$(dirname "$0")/docker.log"
+case "$cmd" in
+  ps)
+    args=" $* "
+    if printf "%s" "$args" | grep -q "name=acu-image-prep-" && printf "%s" "$args" | grep -q "status=exited"; then
+      exit 0
+    fi
+    if printf "%s" "$args" | grep -q "name=acu-image-prep-"; then
+      echo "acu-image-prep-product-live"
+      exit 0
+    fi
+    exit 0
+    ;;
+  run)
+    echo "stub-container-id"
+    ;;
+  inspect)
+    if [ "${1:-}" = "-f" ] && [ "${2:-}" = "{{.State.Running}}" ]; then
+      echo "true"
+    elif [ "${1:-}" = "-f" ] && [ "${2:-}" = "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}" ]; then
+      echo "172.18.0.2"
+    else
+      echo ""
+    fi
+    ;;
+  logs)
+    echo "ok"
     ;;
   rm)
     echo "removed"
