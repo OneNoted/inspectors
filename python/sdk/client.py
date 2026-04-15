@@ -39,6 +39,9 @@ class ComputerUseClient:
     def get_observation(self, session_id: str) -> Any:
         return self._request(f"/api/sessions/{session_id}/observation")
 
+    def export_review_bundle(self, session_id: str) -> Any:
+        return self._request(f"/api/sessions/{session_id}/review/export", "POST", {})
+
     def get_available_actions(self, session_id: str) -> Any:
         return self._request(f"/api/sessions/{session_id}/actions")
 

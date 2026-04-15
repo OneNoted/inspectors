@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildScreenshotUrl, describeLiveDesktopView, getLiveDesktopView } from './live-view.js';
+import { buildScreenshotUrl, describeLiveDesktopView, describeReviewRecording, getLiveDesktopView } from './live-view.js';
 
 test('describeLiveDesktopView prefers canonical qemu product stream', () => {
   const session = {
@@ -124,4 +124,50 @@ test('buildScreenshotUrl appends a cache-busting timestamp', () => {
     canonical_url: '/api/sessions/xvfb/screenshot',
   });
   assert.match(String(url), /^\/api\/sessions\/xvfb\/screenshot\?ts=\d+$/);
+});
+
+test('describeReviewRecording reports exportable sparse review bundles', () => {
+  const description = describeReviewRecording({
+    review_recording: {
+      mode: 'sparse_timeline',
+      status: 'active',
+      retention: 'ephemeral_until_export',
+      event_count: 4,
+      screenshot_count: 2,
+      approx_bytes: 512,
+      last_captured_at: '2026-04-15T11:00:00Z',
+      exportable: true,
+      exported_bundle: null,
+      postmortem_retained_until: null,
+      reason: null,
+    },
+  });
+  assert.equal(description.badge, 'Sparse timeline');
+  assert.equal(description.exportable, true);
+  assert.match(description.counts, /4 events/);
+  assert.match(description.summary, /Ephemeral until export/i);
+});
+
+test('describeReviewRecording makes temporary postmortem retention explicit', () => {
+  const description = describeReviewRecording({
+    review_recording: {
+      mode: 'sparse_timeline',
+      status: 'active',
+      retention: 'temporary_postmortem_pin',
+      event_count: 8,
+      screenshot_count: 3,
+      approx_bytes: 1024,
+      last_captured_at: '2026-04-15T11:00:00Z',
+      exportable: true,
+      exported_bundle: {
+        kind: 'review_bundle',
+        path: 'artifacts/exports/session-review',
+      },
+      postmortem_retained_until: '2026-04-15T12:00:00Z',
+      reason: null,
+    },
+  });
+  assert.equal(description.badge, 'Sparse timeline');
+  assert.match(description.summary, /Temporary postmortem pin/i);
+  assert.match(description.summary, /artifacts\/exports\/session-review/);
 });

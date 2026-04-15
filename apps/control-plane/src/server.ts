@@ -10,7 +10,7 @@ import { Duplex } from 'node:stream';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import type { BrowserContext, Page } from 'playwright-core';
-import type { ActionReceipt, ActionRequest, JsonObject, LiveDesktopView, RuntimeCapabilities, SessionRecord, TaskRecord } from './types.js';
+import type { ActionReceipt, ActionRequest, JsonObject, LiveDesktopView, ReviewRecordingSummary, RuntimeCapabilities, SessionRecord, TaskRecord } from './types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '../../..');
@@ -143,8 +143,25 @@ function deriveLiveDesktopView(session: SessionRecord): LiveDesktopView {
   };
 }
 
+function deriveReviewRecording(session: SessionRecord): ReviewRecordingSummary {
+  return session.review_recording ?? {
+    mode: 'unavailable',
+    status: 'unavailable',
+    retention: 'ephemeral_until_export',
+    event_count: 0,
+    screenshot_count: 0,
+    approx_bytes: 0,
+    last_captured_at: null,
+    exportable: false,
+    exported_bundle: null,
+    postmortem_retained_until: null,
+    reason: 'review recording metadata unavailable',
+  };
+}
+
 function withLiveDesktopView(session: SessionRecord): SessionRecord {
   const liveDesktopView = deriveLiveDesktopView(session);
+  const reviewRecording = deriveReviewRecording(session);
   if (liveDesktopView.mode === 'stream') {
     liveDesktopView.canonical_url = buildLiveViewPath(session.id);
   } else if (liveDesktopView.mode === 'screenshot_poll') {
@@ -154,6 +171,7 @@ function withLiveDesktopView(session: SessionRecord): SessionRecord {
   return {
     ...session,
     live_desktop_view: liveDesktopView,
+    review_recording: reviewRecording,
   };
 }
 
@@ -348,6 +366,55 @@ async function getGuestSession(state: ControlPlaneState, sessionId: string): Pro
   return payload.session;
 }
 
+interface ReviewEventAppendPayload {
+  event_id: string;
+  source: string;
+  kind: string;
+  task_id?: string | null;
+  action_type?: string | null;
+  status?: string | null;
+  receipt?: ActionReceipt | null;
+  details?: JsonObject | null;
+}
+
+async function appendReviewEvent(state: ControlPlaneState, sessionId: string, payload: ReviewEventAppendPayload): Promise<void> {
+  try {
+    await guestJson<{ review_recording: ReviewRecordingSummary }>(
+      state,
+      `/api/sessions/${sessionId}/review-events`,
+      { method: 'POST', body: JSON.stringify(payload) },
+    );
+  } catch {
+    // Review capture should never break the operator path.
+  }
+}
+
+async function recordControlPlaneAction(state: ControlPlaneState, sessionId: string, action: BrowserAction, receipt?: ActionReceipt): Promise<void> {
+  const taskId = action.taskId ?? null;
+  const actionType = action.kind;
+  if (!receipt) {
+    await appendReviewEvent(state, sessionId, {
+      event_id: `control-plane-pre:${randomUUID()}`,
+      source: 'control-plane',
+      kind: 'pre_action',
+      task_id: taskId,
+      action_type: actionType,
+      details: { action: action as unknown as JsonObject },
+    });
+    return;
+  }
+  await appendReviewEvent(state, sessionId, {
+    event_id: `${receipt.receipt_id}:control-plane`,
+    source: 'control-plane',
+    kind: receipt.status === 'ok' ? 'action_completed' : 'action_failed',
+    task_id: taskId,
+    action_type: actionType,
+    status: receipt.status,
+    receipt,
+    details: { action: action as unknown as JsonObject },
+  });
+}
+
 async function commandExists(command: string): Promise<boolean> {
   try {
     await execFileAsync('sh', ['-lc', `command -v ${command} >/dev/null 2>&1`]);
@@ -508,6 +575,10 @@ async function handleBrowserAction(state: ControlPlaneState, sessionId: string, 
 
       pushHistory(state, sessionId, { action: action as unknown as JsonObject, receipt: receipt as unknown as JsonObject, source: 'browser-open-fallback' });
       attachReceiptToTask(state, action.taskId, receipt);
+      if (receipt.status !== 'ok') {
+        await recordControlPlaneAction(state, sessionId, action);
+        await recordControlPlaneAction(state, sessionId, action, receipt);
+      }
       return receipt;
     }
     if (action.kind === 'browser_click' && typeof action.x === 'number' && typeof action.y === 'number') {
@@ -523,6 +594,7 @@ async function handleBrowserAction(state: ControlPlaneState, sessionId: string, 
       return receipt;
     }
     if (action.kind === 'browser_screenshot') {
+      await recordControlPlaneAction(state, sessionId, action);
       const observation = await guestJson<Record<string, unknown>>(state, `/api/sessions/${sessionId}/observation`);
       const screenshot = (observation.screenshot ?? {}) as Record<string, unknown>;
       const receipt: ActionReceipt = {
@@ -537,11 +609,13 @@ async function handleBrowserAction(state: ControlPlaneState, sessionId: string, 
       };
       pushHistory(state, sessionId, { action: action as unknown as JsonObject, receipt: receipt as unknown as JsonObject, source: 'browser-screenshot-fallback' });
       attachReceiptToTask(state, action.taskId, receipt);
+      await recordControlPlaneAction(state, sessionId, action, receipt);
       return receipt;
     }
     if (action.kind === 'browser_get_dom') {
       const snapshot = state.browserSnapshots.get(sessionId);
       if (snapshot?.lastHtml) {
+        await recordControlPlaneAction(state, sessionId, action);
         const receipt: ActionReceipt = {
           status: 'ok',
           receipt_id: randomUUID(),
@@ -554,12 +628,15 @@ async function handleBrowserAction(state: ControlPlaneState, sessionId: string, 
         };
         pushHistory(state, sessionId, { action: action as unknown as JsonObject, receipt: receipt as unknown as JsonObject, source: 'browser-dom-fetch-fallback' });
         attachReceiptToTask(state, action.taskId, receipt);
+        await recordControlPlaneAction(state, sessionId, action, receipt);
         return receipt;
       }
     }
+    await recordControlPlaneAction(state, sessionId, action);
     const receipt = unsupportedBrowserReceipt(action, 'DOM-aware browser automation is disabled in this environment; enable ACU_ENABLE_PLAYWRIGHT=1 to attempt the Playwright adapter.');
     pushHistory(state, sessionId, { action: action as unknown as JsonObject, receipt: receipt as unknown as JsonObject, source: 'browser-disabled' });
     attachReceiptToTask(state, action.taskId, receipt);
+    await recordControlPlaneAction(state, sessionId, action, receipt);
     return receipt;
   }
 
@@ -571,11 +648,13 @@ async function handleBrowserAction(state: ControlPlaneState, sessionId: string, 
 
   switch (action.kind) {
     case 'browser_open':
+      await recordControlPlaneAction(state, sessionId, action);
       await browser.page.goto(action.url, { waitUntil: 'domcontentloaded' });
       result = { url: browser.page.url(), title: await browser.page.title() };
       state.browserSnapshots.set(sessionId, { lastUrl: String(result.url), fetchedAt: new Date().toISOString() });
       break;
     case 'browser_get_dom':
+      await recordControlPlaneAction(state, sessionId, action);
       result = {
         current_url: browser.page.url(),
         title: await browser.page.title(),
@@ -587,6 +666,7 @@ async function handleBrowserAction(state: ControlPlaneState, sessionId: string, 
       break;
     case 'browser_click':
       if (action.selector) {
+        await recordControlPlaneAction(state, sessionId, action);
         await browser.page.locator(action.selector).first().click();
         result = { mode: 'selector', selector: action.selector, clicked: true };
       } else if (typeof action.x === 'number' && typeof action.y === 'number') {
@@ -600,6 +680,7 @@ async function handleBrowserAction(state: ControlPlaneState, sessionId: string, 
       break;
     case 'browser_type':
       if (action.selector) {
+        await recordControlPlaneAction(state, sessionId, action);
         const locator = browser.page.locator(action.selector).first();
         await locator.click();
         await locator.fill(action.text);
@@ -613,6 +694,7 @@ async function handleBrowserAction(state: ControlPlaneState, sessionId: string, 
       }
       break;
     case 'browser_screenshot': {
+      await recordControlPlaneAction(state, sessionId, action);
       const path = join(resolveExportRoot(state.artifactRoot), `${sessionId}-${Date.now()}-browser.png`);
       await mkdir(dirname(path), { recursive: true });
       await browser.page.screenshot({ path, fullPage: true });
@@ -634,6 +716,7 @@ async function handleBrowserAction(state: ControlPlaneState, sessionId: string, 
   };
   pushHistory(state, sessionId, { action: action as unknown as JsonObject, receipt: receipt as unknown as JsonObject, source: 'browser-adapter' });
   attachReceiptToTask(state, action.taskId, receipt);
+  await recordControlPlaneAction(state, sessionId, action, receipt);
   return receipt;
 }
 
@@ -750,6 +833,16 @@ export function createRequestHandler(state: ControlPlaneState) {
         res.statusCode = upstream.status;
         upstream.headers.forEach((value, key) => res.setHeader(key, value));
         res.end(Buffer.from(await upstream.arrayBuffer()));
+        return;
+      }
+
+      const reviewExportMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/review\/export$/);
+      if (reviewExportMatch && req.method === 'POST') {
+        const upstream = await guestRequest(state, `/api/sessions/${reviewExportMatch[1]}/review/export`, {
+          method: 'POST',
+          body: JSON.stringify({}),
+        });
+        json(res, upstream.status, upstream.payload);
         return;
       }
 
@@ -887,6 +980,18 @@ export function createRequestHandler(state: ControlPlaneState) {
           requireApproval: Boolean(body.require_approval),
         };
         state.tasks.set(task.id, task);
+        if (task.sessionId) {
+          await appendReviewEvent(state, task.sessionId, {
+            event_id: `task-created:${task.id}`,
+            source: 'control-plane',
+            kind: 'task_created',
+            task_id: task.id,
+            details: {
+              description: task.description,
+              thought_summary: task.thoughtSummary ?? null,
+            },
+          });
+        }
         json(res, 201, { task });
         return;
       }
@@ -912,6 +1017,19 @@ export function createRequestHandler(state: ControlPlaneState) {
         task.status = taskActionMatch[2] === 'reset' ? 'pending' : mapTaskStatus(taskActionMatch[2]);
         task.updatedAt = new Date().toISOString();
         state.tasks.set(task.id, task);
+        if (task.sessionId) {
+          await appendReviewEvent(state, task.sessionId, {
+            event_id: `task-state:${task.id}:${taskActionMatch[2]}:${task.updatedAt}`,
+            source: 'control-plane',
+            kind: 'task_state_changed',
+            task_id: task.id,
+            status: task.status,
+            details: {
+              next_status: task.status,
+              verb: taskActionMatch[2],
+            },
+          });
+        }
         json(res, 200, { task });
         return;
       }

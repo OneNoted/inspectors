@@ -184,7 +184,7 @@ impl ActionRequest {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ArtifactRef {
     pub kind: String,
     pub path: String,
@@ -363,6 +363,7 @@ pub struct SessionRecord {
     pub runtime_base_url: Option<String>,
     pub viewer_url: Option<String>,
     pub live_desktop_view: Option<LiveDesktopView>,
+    pub review_recording: Option<ReviewRecordingSummary>,
     pub bridge_status: Option<String>,
     pub readiness_state: Option<String>,
     pub bridge_error: Option<StructuredError>,
@@ -378,6 +379,21 @@ pub struct LiveDesktopView {
     pub debug_url: Option<String>,
     pub reason: Option<String>,
     pub refresh_interval_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ReviewRecordingSummary {
+    pub mode: String,
+    pub status: String,
+    pub retention: String,
+    pub event_count: u64,
+    pub screenshot_count: u64,
+    pub approx_bytes: u64,
+    pub last_captured_at: Option<DateTime<Utc>>,
+    pub exportable: bool,
+    pub exported_bundle: Option<ArtifactRef>,
+    pub postmortem_retained_until: Option<DateTime<Utc>>,
+    pub reason: Option<String>,
 }
 
 fn default_provider() -> String {
@@ -555,5 +571,66 @@ mod tests {
         assert_eq!(request.provider, "qemu");
         assert_eq!(request.width, 1280);
         assert_eq!(request.height, 720);
+    }
+
+    #[test]
+    fn session_record_supports_review_recording_summary() {
+        let now = Utc::now();
+        let record = SessionRecord {
+            id: "session-1".to_string(),
+            provider: "qemu".to_string(),
+            qemu_profile: Some("product".to_string()),
+            display: None,
+            width: 1440,
+            height: 900,
+            state: "running".to_string(),
+            created_at: now,
+            artifacts_dir: "artifacts/runtime/session-1".to_string(),
+            capabilities: vec!["vm".to_string()],
+            browser_command: Some("firefox".to_string()),
+            desktop_user: Some("ubuntu".to_string()),
+            desktop_home: Some("/home/ubuntu".to_string()),
+            desktop_runtime_dir: Some("/run/user/1000".to_string()),
+            runtime_base_url: Some("http://127.0.0.1:4001".to_string()),
+            viewer_url: Some("http://127.0.0.1:8006".to_string()),
+            live_desktop_view: Some(LiveDesktopView {
+                mode: "stream".to_string(),
+                status: "ready".to_string(),
+                provider_surface: "qemu_novnc".to_string(),
+                matches_action_plane: true,
+                canonical_url: Some("/api/sessions/session-1/live-view/".to_string()),
+                debug_url: Some("http://127.0.0.1:8006".to_string()),
+                reason: None,
+                refresh_interval_ms: None,
+            }),
+            review_recording: Some(ReviewRecordingSummary {
+                mode: "sparse_timeline".to_string(),
+                status: "active".to_string(),
+                retention: "ephemeral_until_export".to_string(),
+                event_count: 3,
+                screenshot_count: 2,
+                approx_bytes: 1024,
+                last_captured_at: Some(now),
+                exportable: true,
+                exported_bundle: Some(ArtifactRef {
+                    kind: "review_bundle".to_string(),
+                    path: "artifacts/exports/session-1-review".to_string(),
+                    mime_type: None,
+                }),
+                postmortem_retained_until: None,
+                reason: None,
+            }),
+            bridge_status: Some("runtime_ready".to_string()),
+            readiness_state: Some("runtime_ready".to_string()),
+            bridge_error: None,
+        };
+
+        let value = serde_json::to_value(&record).expect("serialize session record");
+        assert_eq!(value["review_recording"]["mode"], "sparse_timeline");
+        assert_eq!(value["review_recording"]["event_count"], 3);
+        assert_eq!(
+            value["review_recording"]["exported_bundle"]["kind"],
+            "review_bundle"
+        );
     }
 }

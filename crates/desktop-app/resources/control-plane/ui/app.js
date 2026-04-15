@@ -1,4 +1,4 @@
-import { buildScreenshotUrl, describeLiveDesktopView, getLiveDesktopView } from './live-view.js';
+import { buildScreenshotUrl, describeLiveDesktopView, describeReviewRecording, getLiveDesktopView } from './live-view.js';
 import { buildSessionUrl, getSessionIdFromLocation, parseSessionReference } from './session-link.js';
 
 const sessionMeta = document.getElementById('session-meta');
@@ -12,6 +12,10 @@ const viewerLink = document.getElementById('viewer-link');
 const observation = document.getElementById('observation');
 const historyEl = document.getElementById('history');
 const tasksEl = document.getElementById('tasks');
+const reviewRecordingMeta = document.getElementById('review-recording-meta');
+const reviewRecordingBadge = document.getElementById('review-recording-badge');
+const reviewRecordingSummary = document.getElementById('review-recording-summary');
+const exportReviewBundleButton = document.getElementById('export-review-bundle');
 const taskDescription = document.getElementById('task-description');
 const actionPayload = document.getElementById('action-payload');
 const providerSelect = document.getElementById('session-provider');
@@ -51,6 +55,9 @@ function clearLocalSelection() {
   observation.textContent = '';
   historyEl.textContent = '';
   tasksEl.textContent = '';
+  if (reviewRecordingMeta) reviewRecordingMeta.textContent = 'No session';
+  if (reviewRecordingBadge) reviewRecordingBadge.textContent = 'Unavailable';
+  if (reviewRecordingSummary) reviewRecordingSummary.textContent = 'No review bundle available.';
   resetDesktopState();
 }
 
@@ -75,6 +82,7 @@ function resetDesktopState(message = 'Live desktop unavailable') {
   desktopPanelTitle.textContent = 'Live desktop view';
   liveViewBadge.textContent = 'Unavailable';
   liveViewTrust.textContent = 'No session selected.';
+  if (exportReviewBundleButton) exportReviewBundleButton.disabled = true;
 }
 
 function sessionOptionLabel(session) {
@@ -120,15 +128,28 @@ async function refreshSessionPicker() {
 
 function summarizeSession(session) {
   const liveView = getLiveDesktopView(session);
+  const review = session.review_recording ?? { mode: 'unavailable', status: 'unavailable' };
   const parts = [
     `provider=${session.provider}`,
     `bridge=${session.bridge_status ?? 'n/a'}`,
     `ready=${session.readiness_state ?? 'n/a'}`,
     `view=${liveView.mode}/${liveView.status}`,
+    `review=${review.mode}/${review.status}`,
   ];
   if (session.qemu_profile) parts.push(`profile=${session.qemu_profile}`);
   if (session.desktop_user) parts.push(`desktop=${session.desktop_user}`);
   sessionSummary.textContent = parts.join(' · ');
+}
+
+function updateReviewRecording(session) {
+  if (!reviewRecordingMeta || !reviewRecordingBadge || !reviewRecordingSummary) return;
+  const description = describeReviewRecording(session);
+  reviewRecordingBadge.textContent = description.badge;
+  reviewRecordingSummary.textContent = description.summary;
+  reviewRecordingMeta.textContent = description.counts;
+  if (exportReviewBundleButton) {
+    exportReviewBundleButton.disabled = !description.exportable || !sessionId;
+  }
 }
 
 function updateLiveView(session, observation) {
@@ -177,6 +198,7 @@ async function refresh() {
     summarizeSession(session);
     sessionMeta.textContent = JSON.stringify(sessionPayload, null, 2);
     updateLiveView(session, null);
+    updateReviewRecording(session);
     syncSessionLocation();
 
     try {
@@ -201,6 +223,9 @@ async function refresh() {
     observation.textContent = JSON.stringify({ error: 'observation unavailable' }, null, 2);
     historyEl.textContent = '[]';
     tasksEl.textContent = '[]';
+    if (reviewRecordingMeta) reviewRecordingMeta.textContent = 'Unavailable';
+    if (reviewRecordingBadge) reviewRecordingBadge.textContent = 'Unavailable';
+    if (reviewRecordingSummary) reviewRecordingSummary.textContent = 'Review recording unavailable';
     resetDesktopState('Live desktop unavailable for the requested session');
   }
 }
@@ -259,6 +284,15 @@ document.getElementById('reclaim-storage')?.addEventListener('click', async () =
   tasksEl.textContent = JSON.stringify(payload, null, 2);
   sessionSummary.textContent = `reclaim=${payload.reclaimed?.length ?? 0} · candidates=${payload.candidate_count ?? 0}`;
   await refreshSessionPicker();
+});
+exportReviewBundleButton?.addEventListener('click', async () => {
+  if (!sessionId) return;
+  const payload = await json(`/api/sessions/${sessionId}/review/export`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+  tasksEl.textContent = JSON.stringify(payload, null, 2);
+  await refresh();
 });
 providerSelect.addEventListener('change', updateProviderOptions);
 updateProviderOptions();

@@ -11,6 +11,22 @@ export function getLiveDesktopView(session) {
   };
 }
 
+export function getReviewRecording(session) {
+  return session?.review_recording ?? {
+    mode: 'unavailable',
+    status: 'unavailable',
+    retention: 'ephemeral_until_export',
+    event_count: 0,
+    screenshot_count: 0,
+    approx_bytes: 0,
+    last_captured_at: null,
+    exportable: false,
+    exported_bundle: null,
+    postmortem_retained_until: null,
+    reason: 'review recording metadata unavailable',
+  };
+}
+
 function getObservationActiveWindow(observation) {
   if (!observation) return null;
   if (typeof observation.active_window === 'string' && observation.active_window) {
@@ -100,4 +116,34 @@ export function describeLiveDesktopView(session, observation = null) {
 export function buildScreenshotUrl(liveView) {
   if (!liveView?.canonical_url) return null;
   return `${liveView.canonical_url}?ts=${Date.now()}`;
+}
+
+export function describeReviewRecording(session) {
+  const review = getReviewRecording(session);
+  if (review.mode === 'unavailable') {
+    return {
+      badge: 'Unavailable',
+      summary: review.reason ?? 'No review bundle is available for this session.',
+      counts: '0 events · 0 screenshots',
+      exportable: false,
+      exportedPath: null,
+    };
+  }
+
+  const parts = [
+    `${review.event_count} event${review.event_count === 1 ? '' : 's'}`,
+    `${review.screenshot_count} screenshot${review.screenshot_count === 1 ? '' : 's'}`,
+    `${review.approx_bytes} bytes`,
+  ];
+  const retention = review.retention === 'temporary_postmortem_pin'
+    ? `Temporary postmortem pin${review.postmortem_retained_until ? ` until ${review.postmortem_retained_until}` : ''}.`
+    : 'Ephemeral until export.';
+
+  return {
+    badge: review.status === 'exported' ? 'Exported' : 'Sparse timeline',
+    summary: `${retention} ${review.exported_bundle?.path ? `Latest export: ${review.exported_bundle.path}` : 'Export to keep the bundle after session teardown.'}`,
+    counts: parts.join(' · '),
+    exportable: review.exportable,
+    exportedPath: review.exported_bundle?.path ?? null,
+  };
 }
