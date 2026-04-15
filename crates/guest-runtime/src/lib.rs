@@ -1426,11 +1426,7 @@ async fn append_review_event_to_bundle(
     manifest.live_desktop_view = derive_live_desktop_view(record);
     manifest.last_captured_at = Some(event.captured_at);
 
-    if matches!(
-        request.kind.as_str(),
-        "action_failed" | "bridge_state_changed"
-    ) || request.status.as_deref() == Some("error")
-    {
+    if request.kind == "action_failed" || request.status.as_deref() == Some("error") {
         manifest.retention = "temporary_postmortem_pin".to_string();
         manifest.postmortem_retained_until =
             Some(chrono::Utc::now() + chrono::Duration::seconds(REVIEW_POSTMORTEM_TTL_SECS));
@@ -3939,6 +3935,53 @@ mod tests {
         assert!(postmortem_retention_active(&temp));
         let summary = review_summary_from_manifest(&manifest);
         assert_eq!(summary.retention, "temporary_postmortem_pin");
+        std::fs::remove_dir_all(temp).expect("cleanup temp");
+    }
+
+    #[tokio::test]
+    async fn successful_bridge_transitions_do_not_pin_postmortem_retention() {
+        let temp = temp_test_dir("guest-runtime-bridge-success");
+        let record = SessionRecord {
+            id: "qemu-product".to_string(),
+            provider: "qemu".to_string(),
+            qemu_profile: Some("product".to_string()),
+            display: None,
+            width: 1440,
+            height: 900,
+            state: "running".to_string(),
+            created_at: Utc::now(),
+            artifacts_dir: temp.to_string_lossy().to_string(),
+            capabilities: vec!["viewer".to_string()],
+            browser_command: Some("firefox".to_string()),
+            desktop_user: Some(QEMU_PRODUCT_DESKTOP_USER.to_string()),
+            desktop_home: Some(QEMU_PRODUCT_DESKTOP_HOME.to_string()),
+            desktop_runtime_dir: Some(QEMU_PRODUCT_RUNTIME_DIR.to_string()),
+            runtime_base_url: None,
+            viewer_url: Some("http://127.0.0.1:32771".to_string()),
+            live_desktop_view: None,
+            review_recording: None,
+            bridge_status: Some("runtime_ready".to_string()),
+            readiness_state: Some("runtime_ready".to_string()),
+            bridge_error: None,
+        };
+        let client = Client::new();
+        let request = AppendReviewEventRequest {
+            event_id: "bridge-status-runtime-ready".to_string(),
+            source: "guest-runtime".to_string(),
+            kind: "bridge_state_changed".to_string(),
+            task_id: None,
+            action_type: None,
+            status: None,
+            receipt: None,
+            details: Some(serde_json::json!({ "bridge_status": "runtime_ready" })),
+        };
+
+        let summary = append_review_event_to_bundle(&client, &record, None, &request)
+            .await
+            .expect("append bridge transition");
+
+        assert_eq!(summary.retention, "ephemeral_until_export");
+        assert_eq!(summary.postmortem_retained_until, None);
         std::fs::remove_dir_all(temp).expect("cleanup temp");
     }
 
