@@ -54,6 +54,18 @@ Then open `http://127.0.0.1:3000`.
 - `qemu` + `product` is the main product path.
 - `xvfb` is the lighter local fallback and the current regression lane.
 
+## Default operator + agent loop
+
+Use this as the primary workflow:
+
+1. Start the default session path (`qemu` + `product`)
+2. Wait until the session is ready
+3. Create a task or issue actions through the API/SDK
+4. Watch the returned live desktop view (or truthful screenshot fallback)
+5. Delete the session when done unless you explicitly export artifacts
+
+The UI keeps provider overrides, attach-existing-session, and manual actions under Advanced / Debug so the happy path stays simple.
+
 If you want a quick local confidence check, run the explicit Xvfb smoke eval:
 
 ```bash
@@ -93,6 +105,14 @@ export-schemas ./schemas
 - `python/examples/browser_research.py`
 - `python/examples/file_terminal.py`
 - `python/examples/code_editor.py`
+
+## Minimal AGENTS.md guidance
+
+If you want an agent to discover the default workflow from a short instruction block, use something like:
+
+```md
+You have access to inspectors. Start a session with default settings, wait for readiness, run the task, use the live desktop view or screenshot fallback to observe progress, and delete the session when done unless you explicitly export artifacts.
+```
 
 ## Read next
 

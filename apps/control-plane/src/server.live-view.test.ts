@@ -32,6 +32,19 @@ function sessionRecord(id: string, overrides: Record<string, unknown> = {}) {
     runtime_base_url: 'http://127.0.0.1:4001',
     viewer_url: null,
     live_desktop_view: null,
+    review_recording: {
+      mode: 'sparse_timeline',
+      status: 'active',
+      retention: 'ephemeral_until_export',
+      event_count: 1,
+      screenshot_count: 0,
+      approx_bytes: 128,
+      last_captured_at: new Date().toISOString(),
+      exportable: true,
+      exported_bundle: null,
+      postmortem_retained_until: null,
+      reason: null,
+    },
     bridge_status: 'runtime_ready',
     readiness_state: 'runtime_ready',
     bridge_error: null,
@@ -135,6 +148,19 @@ async function startHarness(): Promise<Harness> {
           provider: 'qemu',
           qemu_profile: 'regression',
           viewer_url: viewerUrl,
+          review_recording: {
+            mode: 'unavailable',
+            status: 'unavailable',
+            retention: 'ephemeral_until_export',
+            event_count: 0,
+            screenshot_count: 0,
+            approx_bytes: 0,
+            last_captured_at: null,
+            exportable: false,
+            exported_bundle: null,
+            postmortem_retained_until: null,
+            reason: 'review recording is available only for qemu product sessions in v1',
+          },
         }),
       }));
       return;
@@ -148,7 +174,48 @@ async function startHarness(): Promise<Harness> {
           viewer_url: null,
           display: ':90',
           capabilities: ['screenshot'],
+          review_recording: {
+            mode: 'unavailable',
+            status: 'unavailable',
+            retention: 'ephemeral_until_export',
+            event_count: 0,
+            screenshot_count: 0,
+            approx_bytes: 0,
+            last_captured_at: null,
+            exportable: false,
+            exported_bundle: null,
+            postmortem_retained_until: null,
+            reason: 'review recording is available only for qemu product sessions in v1',
+          },
         }),
+      }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/sessions/qemu-product/review/export') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        bundle: {
+          kind: 'review_bundle',
+          path: 'artifacts/exports/qemu-product-review',
+          mime_type: null,
+        },
+        review_recording: {
+          mode: 'sparse_timeline',
+          status: 'exported',
+          retention: 'ephemeral_until_export',
+          event_count: 4,
+          screenshot_count: 2,
+          approx_bytes: 512,
+          last_captured_at: new Date().toISOString(),
+          exportable: true,
+          exported_bundle: {
+            kind: 'review_bundle',
+            path: 'artifacts/exports/qemu-product-review',
+            mime_type: null,
+          },
+          postmortem_retained_until: null,
+          reason: null,
+        },
       }));
       return;
     }
@@ -203,16 +270,20 @@ test('session metadata exposes truthful live_desktop_view modes', async () => {
     assert.equal(qemuProduct.session.live_desktop_view.canonical_url, '/api/sessions/qemu-product/live-view/');
     assert.equal(qemuProduct.session.live_desktop_view.debug_url, harness.viewerUrl);
     assert.equal(qemuProduct.session.live_desktop_view.matches_action_plane, true);
+    assert.equal(qemuProduct.session.review_recording.mode, 'sparse_timeline');
+    assert.equal(qemuProduct.session.review_recording.exportable, true);
 
     const qemuRegression = await fetch(`${harness.baseUrl}/api/sessions/qemu-regression`).then((res) => res.json()) as { session: any };
     assert.equal(qemuRegression.session.live_desktop_view.mode, 'screenshot_poll');
     assert.equal(qemuRegression.session.live_desktop_view.canonical_url, '/api/sessions/qemu-regression/screenshot');
     assert.equal(qemuRegression.session.live_desktop_view.debug_url, harness.viewerUrl);
+    assert.equal(qemuRegression.session.review_recording.mode, 'unavailable');
 
     const xvfb = await fetch(`${harness.baseUrl}/api/sessions/xvfb`).then((res) => res.json()) as { session: any };
     assert.equal(xvfb.session.live_desktop_view.mode, 'screenshot_poll');
     assert.equal(xvfb.session.live_desktop_view.canonical_url, '/api/sessions/xvfb/screenshot');
     assert.match(String(xvfb.session.live_desktop_view.reason), /screenshot fallback/i);
+    assert.equal(xvfb.session.review_recording.mode, 'unavailable');
   } finally {
     await stopHarness(harness);
   }
@@ -301,6 +372,24 @@ test('live-view websocket upgrades proxy to the upstream viewer', async () => {
       path: '/websockify',
       host: new URL(harness.viewerUrl).host,
     });
+  } finally {
+    await stopHarness(harness);
+  }
+});
+
+test('review export route proxies durable review bundle metadata', async () => {
+  const harness = await startHarness();
+  try {
+    const response = await fetch(`${harness.baseUrl}/api/sessions/qemu-product/review/export`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    assert.equal(response.status, 200);
+    const payload = await response.json() as { bundle: { kind: string; path: string }; review_recording: { status: string } };
+    assert.equal(payload.bundle.kind, 'review_bundle');
+    assert.equal(payload.bundle.path, 'artifacts/exports/qemu-product-review');
+    assert.equal(payload.review_recording.status, 'exported');
   } finally {
     await stopHarness(harness);
   }

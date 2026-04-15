@@ -40,6 +40,29 @@ def fetch_screenshot(session_id: str, destination: Path) -> str:
     return str(destination)
 
 
+def export_review_bundle(session_id: str) -> dict:
+    payload = client.export_review_bundle(session_id)
+    bundle = payload.get("bundle") or {}
+    review_recording = payload.get("review_recording") or {}
+    bundle_path = Path(bundle.get("path") or "")
+    if bundle.get("kind") != "review_bundle":
+        raise SystemExit(f"expected review_bundle export kind, got: {payload}")
+    if review_recording.get("mode") != "sparse_timeline":
+        raise SystemExit(f"expected sparse_timeline review recording, got: {payload}")
+    if review_recording.get("status") != "exported":
+        raise SystemExit(f"expected exported review recording status, got: {payload}")
+    if not bundle_path.exists():
+        raise SystemExit(f"expected exported review bundle path to exist, got: {bundle_path}")
+    for required_name in ("review.json", "timeline.jsonl"):
+        if not (bundle_path / required_name).exists():
+            raise SystemExit(f"expected exported review bundle to contain {required_name}: {bundle_path}")
+    return {
+        "path": str(bundle_path),
+        "manifest_path": str(bundle_path / "review.json"),
+        "timeline_path": str(bundle_path / "timeline.jsonl"),
+    }
+
+
 session = create_qemu_session(provider="qemu", qemu_profile="product", width=1440, height=900)
 session_id = session["id"]
 
@@ -104,6 +127,14 @@ time.sleep(2)
 
 observation = client.get_observation(session_id)
 after_screenshot = fetch_screenshot(session_id, artifacts_dir / "qemu-live-view-after.png")
+runtime_review_dir = Path(latest_session["artifacts_dir"]) / "review"
+review_export = export_review_bundle(session_id)
+session_after_export = client.get_session(session_id)["session"]
+exported_summary = session_after_export.get("review_recording") or {}
+if (exported_summary.get("exported_bundle") or {}).get("path") != review_export["path"]:
+    raise SystemExit(
+        f"session metadata did not retain exported bundle path: summary={exported_summary} export={review_export}"
+    )
 
 before_bytes = Path(before_screenshot).read_bytes()
 after_bytes = Path(after_screenshot).read_bytes()
@@ -123,6 +154,7 @@ result = {
     "mouse_click_receipt": mouse_click_receipt,
     "type_receipt": type_receipt,
     "observation": observation,
+    "review_recording": exported_summary,
     "artifacts": {
         "before_screenshot": before_screenshot,
         "after_screenshot": after_screenshot,
@@ -134,8 +166,6 @@ result = {
         "after_sha256": after_hash,
     },
 }
-Path("artifacts/qemu-live-view-demo.json").write_text(json.dumps(result, indent=2))
-
 try:
     client._request(f"/api/tasks/{task_id}/complete", "POST", {})
 except Exception:
@@ -144,5 +174,17 @@ try:
     client._request(f"/api/sessions/{session_id}", "DELETE", {})
 except Exception:
     pass
+if runtime_review_dir.exists():
+    raise SystemExit(f"expected runtime review dir to be removed after session deletion: {runtime_review_dir}")
+if not Path(review_export["path"]).exists():
+    raise SystemExit(f"expected exported review bundle to survive session deletion: {review_export['path']}")
+
+result["review_export"] = {
+    **review_export,
+    "runtime_review_dir": str(runtime_review_dir),
+    "runtime_review_dir_removed_after_delete": not runtime_review_dir.exists(),
+    "exported_bundle_survived_session_delete": Path(review_export["path"]).exists(),
+}
+Path("artifacts/qemu-live-view-demo.json").write_text(json.dumps(result, indent=2))
 
 print("wrote artifacts/qemu-live-view-demo.json")

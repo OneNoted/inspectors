@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -50,6 +50,27 @@ async function startGuestServer() {
           readiness_state: 'runtime_ready',
           bridge_error: null,
         },
+      }));
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/storage/reclaim') {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        mode: body.mode ?? 'report',
+        candidate_count: 1,
+        candidates: [
+          {
+            path: '/tmp/inspectors/runtime/stale-session',
+            tier: 'runtime',
+            kind: 'legacy_runtime',
+            reason: 'legacy inspectors runtime directory without an active container reference',
+          },
+        ],
+        reclaimed: body.mode === 'apply' ? ['/tmp/inspectors/runtime/stale-session'] : [],
       }));
       return;
     }
@@ -150,5 +171,73 @@ test('qemu product session creation preserves desktop user metadata and live vie
     });
   } finally {
     await stopServers(controlPlane, guest.guestServer);
+  }
+});
+
+test('control-plane proxies storage reclaim requests', async () => {
+  const guest = await startGuestServer();
+  const controlPlane = await startControlPlaneServer(0, guest.baseUrl);
+  const baseUrl = `http://127.0.0.1:${(controlPlane.server.address() as { port: number }).port}`;
+
+  try {
+    const response = await fetch(`${baseUrl}/api/storage/reclaim`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: 'apply' }),
+    });
+    assert.equal(response.status, 200);
+    const payload = await response.json() as {
+      mode: string;
+      candidate_count: number;
+      reclaimed: string[];
+    };
+    assert.equal(payload.mode, 'apply');
+    assert.equal(payload.candidate_count, 1);
+    assert.deepEqual(payload.reclaimed, ['/tmp/inspectors/runtime/stale-session']);
+  } finally {
+    await stopServers(controlPlane, guest.guestServer);
+  }
+});
+
+test('qemu product session creation can activate the desktop app when configured', async () => {
+  const activationDir = tempDir('acu-desktop-activate');
+  const activationScript = join(activationDir, 'activate.js');
+  const activationOutput = join(activationDir, 'activation.json');
+  writeFileSync(
+    activationScript,
+    `const fs = require('node:fs'); fs.writeFileSync(process.argv[2], JSON.stringify(process.argv.slice(3)));`,
+  );
+
+  const previousActivateBin = process.env.ACU_DESKTOP_ACTIVATE_BIN;
+  const previousActivateArgs = process.env.ACU_DESKTOP_ACTIVATE_ARGS_JSON;
+  process.env.ACU_DESKTOP_ACTIVATE_BIN = process.execPath;
+  process.env.ACU_DESKTOP_ACTIVATE_ARGS_JSON = JSON.stringify([activationScript, activationOutput]);
+
+  const guest = await startGuestServer();
+  const controlPlane = await startControlPlaneServer(0, guest.baseUrl);
+  const baseUrl = `http://127.0.0.1:${(controlPlane.server.address() as { port: number }).port}`;
+
+  try {
+    const response = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'qemu', qemu_profile: 'product' }),
+    });
+    assert.equal(response.status, 201);
+    const activationArgs = JSON.parse(readFileSync(activationOutput, 'utf8')) as string[];
+    assert.deepEqual(activationArgs, ['--activate-desktop', '--session', 'qemu-product']);
+  } finally {
+    if (previousActivateBin === undefined) {
+      delete process.env.ACU_DESKTOP_ACTIVATE_BIN;
+    } else {
+      process.env.ACU_DESKTOP_ACTIVATE_BIN = previousActivateBin;
+    }
+    if (previousActivateArgs === undefined) {
+      delete process.env.ACU_DESKTOP_ACTIVATE_ARGS_JSON;
+    } else {
+      process.env.ACU_DESKTOP_ACTIVATE_ARGS_JSON = previousActivateArgs;
+    }
+    await stopServers(controlPlane, guest.guestServer);
+    rmSync(activationDir, { recursive: true, force: true });
   }
 });

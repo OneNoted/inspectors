@@ -31,6 +31,22 @@ Agent Computer Use Platform gives agents a real Linux desktop to work in, with s
 - Runs agent tasks inside disposable Linux sessions instead of collapsing everything into a browser tab.
 - Gives you one place to work with screenshots, shell commands, files, desktop input, and session state.
 - Keeps operators in the loop with a live desktop view, structured receipts, and clear fallback modes.
+- Exposes a `review_recording` summary for qemu `product` sessions and lets you explicitly export a sparse review bundle for later human review instead of recording default video.
+
+## Default flow
+
+The default happy path is now:
+
+1. Start a session with default settings (`qemu` + `product`)
+2. Wait for readiness
+3. Submit a task
+4. Watch `live_desktop_view` or the truthful screenshot fallback
+5. Export the sparse review bundle if you want durable evidence for later review
+6. Delete the session when done; only exported bundles survive session teardown
+
+QEMU review recording is intentionally storage-first in v1: the durable artifact is a sparse review bundle (`review.json`, `timeline.jsonl`, deduplicated screenshots), not a continuous video capture.
+
+That is the workflow agents should infer first. Advanced/debug controls still exist, but they are secondary.
 
 ## Quickstart
 

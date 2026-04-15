@@ -66,6 +66,20 @@ export interface LiveDesktopView {
   refresh_interval_ms?: number | null;
 }
 
+export interface ReviewRecordingSummary {
+  mode: 'sparse_timeline' | 'unavailable';
+  status: 'active' | 'idle' | 'exported' | 'unavailable';
+  retention: 'ephemeral_until_export' | 'temporary_postmortem_pin';
+  event_count: number;
+  screenshot_count: number;
+  approx_bytes: number;
+  last_captured_at?: string | null;
+  exportable: boolean;
+  exported_bundle?: ArtifactRef | null;
+  postmortem_retained_until?: string | null;
+  reason?: string | null;
+}
+
 export interface ObservationEnvelope {
   captured_at: string;
   screenshot: ScreenshotData;
@@ -147,9 +161,20 @@ export interface SessionRecord {
   runtime_base_url?: string | null;
   viewer_url?: string | null;
   live_desktop_view?: LiveDesktopView | null;
+  review_recording?: ReviewRecordingSummary | null;
   bridge_status?: string | null;
   readiness_state?: string | null;
   bridge_error?: StructuredError | null;
+}
+
+export interface ReclaimStorageResponse {
+  mode: 'report' | 'apply';
+  runtime_root: string;
+  cache_root: string;
+  exports_root: string;
+  candidate_count: number;
+  candidates: { path: string; tier: string; kind: string; reason: string }[];
+  reclaimed: string[];
 }
 
 export class ComputerUseClient {
@@ -170,6 +195,10 @@ export class ComputerUseClient {
     return this.request<{ adapters: JsonValue[] }>('/api/adapters');
   }
 
+  reclaimStorage(mode: 'report' | 'apply' = 'report') {
+    return this.request<ReclaimStorageResponse>('/api/storage/reclaim', { method: 'POST', body: JSON.stringify({ mode }) });
+  }
+
   createSession(request: CreateSessionRequest = {}) {
     return this.request<{ session: SessionRecord }>('/api/sessions', { method: 'POST', body: JSON.stringify(request) });
   }
@@ -184,6 +213,10 @@ export class ComputerUseClient {
 
   getObservation(sessionId: string) {
     return this.request<ObservationEnvelope>(`/api/sessions/${sessionId}/observation`);
+  }
+
+  exportReviewBundle(sessionId: string) {
+    return this.request<{ bundle: ArtifactRef; review_recording: ReviewRecordingSummary }>(`/api/sessions/${sessionId}/review/export`, { method: 'POST', body: JSON.stringify({}) });
   }
 
   getAvailableActions(sessionId: string) {

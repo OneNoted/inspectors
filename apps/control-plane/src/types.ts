@@ -50,6 +50,20 @@ export interface LiveDesktopView {
   refresh_interval_ms?: number | null;
 }
 
+export interface ReviewRecordingSummary {
+  mode: 'sparse_timeline' | 'unavailable';
+  status: 'active' | 'idle' | 'exported' | 'unavailable';
+  retention: 'ephemeral_until_export' | 'temporary_postmortem_pin';
+  event_count: number;
+  screenshot_count: number;
+  approx_bytes: number;
+  last_captured_at?: string | null;
+  exportable: boolean;
+  exported_bundle?: { kind: string; path: string; mime_type?: string | null } | null;
+  postmortem_retained_until?: string | null;
+  reason?: string | null;
+}
+
 export interface SessionRecord {
   id: string;
   provider: string;
@@ -68,6 +82,7 @@ export interface SessionRecord {
   runtime_base_url?: string | null;
   viewer_url?: string | null;
   live_desktop_view?: LiveDesktopView | null;
+  review_recording?: ReviewRecordingSummary | null;
   bridge_status?: string | null;
   readiness_state?: string | null;
   bridge_error?: unknown;

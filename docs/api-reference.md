@@ -5,6 +5,30 @@
 ### `GET /api/health`
 Returns control-plane health plus guest-runtime health.
 
+### `POST /api/storage/reclaim`
+Report or reclaim stale inspectors-managed storage.
+
+Request body:
+```json
+{
+  "mode": "report"
+}
+```
+
+Use `"apply"` to remove reclaim candidates instead of only reporting them.
+
+Response includes:
+- `runtime_root`
+- `cache_root`
+- `exports_root`
+- `legacy_build_root`
+- `candidate_count`
+- `candidates[]`
+- `reclaimed[]`
+- `limitations[]`
+
+Use the reclaim endpoint for inspectors-managed stale runtime directories and old qemu prep workdirs. Detached anonymous Docker volumes from older versions may still require manual Docker review because inspectors cannot attribute them safely once their original containers are gone.
+
 ### `POST /api/sessions`
 Create a sandbox session.
 
@@ -50,6 +74,7 @@ Return session metadata and whether the browser adapter is attached.
 
 QEMU sessions may include:
 - `live_desktop_view`
+- `review_recording`
 - `viewer_url`
 - `runtime_base_url`
 - `bridge_status`
@@ -61,6 +86,11 @@ QEMU sessions may include:
 
 ### `DELETE /api/sessions/:id`
 Stop the session and clean up child processes/containers.
+
+Default storage semantics:
+- session-owned runtime storage is deleted on normal teardown,
+- reusable qemu assets stay under cache,
+- retained evidence should be treated as explicit export/pin state.
 
 ### `GET /api/sessions/:id/observation`
 Return the latest desktop observation, including `summary`, `raw`, screenshot metadata, and action history.
@@ -82,6 +112,53 @@ Session metadata now includes:
 - `matches_action_plane`: whether the human view matches the active action plane
 - `reason`: explanatory fallback/unavailability text
 - `refresh_interval_ms`: screenshot polling cadence when relevant
+
+### `review_recording`
+Session metadata may also include:
+- `mode`: `sparse_timeline` or `unavailable`
+- `status`: `active`, `idle`, `exported`, or `unavailable`
+- `retention`: `ephemeral_until_export` or `temporary_postmortem_pin`
+- `event_count`: number of canonical review timeline entries
+- `screenshot_count`: number of deduplicated screenshot assets retained in the runtime/export bundle
+- `approx_bytes`: approximate review bundle size
+- `last_captured_at`: latest review capture timestamp
+- `exportable`: whether the session can currently export a durable review bundle
+- `exported_bundle`: optional `ArtifactRef` pointing at the latest exported bundle
+- `postmortem_retained_until`: optional bounded retention timestamp for failed/postmortem sessions
+- `reason`: explanatory text when review recording is unavailable
+
+V1 review recording is intentionally **not** default video capture. Inspectors records a sparse review bundle for qemu `product` sessions: `review.json`, `timeline.jsonl`, and deduplicated screenshots stored only at meaningful action/state boundaries.
+
+### `POST /api/sessions/:id/review/export`
+Export the current sparse review bundle into the durable `artifacts/exports/` tier. This route is available for qemu `product` sessions in v1.
+
+Response example:
+```json
+{
+  "bundle": {
+    "kind": "review_bundle",
+    "path": "/absolute/path/to/artifacts/exports/<session-id>-review",
+    "mime_type": null
+  },
+  "review_recording": {
+    "mode": "sparse_timeline",
+    "status": "exported",
+    "retention": "ephemeral_until_export",
+    "event_count": 18,
+    "screenshot_count": 7,
+    "approx_bytes": 16384,
+    "last_captured_at": "2026-04-15T11:12:13Z",
+    "exportable": true,
+    "exported_bundle": {
+      "kind": "review_bundle",
+      "path": "/absolute/path/to/artifacts/exports/<session-id>-review",
+      "mime_type": null
+    },
+    "postmortem_retained_until": null,
+    "reason": null
+  }
+}
+```
 
 ### `GET /api/sessions/:id/actions`
 Return runtime capabilities plus browser-adapter availability details.
@@ -106,6 +183,17 @@ Example GUI-safe Taskers launch in a qemu `product` guest:
 
 ### `POST /api/tasks`
 Create a task bound to a session.
+
+## Canonical minimal agent workflow
+
+The simplest supported workflow is:
+
+1. `POST /api/sessions` with provider omitted
+2. `GET /api/sessions/:id` until the session is actionable
+3. `POST /api/tasks` or `POST /api/sessions/:id/actions`
+4. Observe `live_desktop_view` / `GET /api/sessions/:id/observation`
+5. `POST /api/sessions/:id/review/export` when you need durable later-review evidence
+6. `DELETE /api/sessions/:id` unless you explicitly want to retain exported evidence
 
 ### `GET /api/tasks/:id`
 Read task status and latest receipt.

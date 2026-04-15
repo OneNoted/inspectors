@@ -39,6 +39,13 @@ label > textarea {
   margin-top: 5px;
 }
 
+.helper-text {
+  margin: 0 0 10px;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
 /* =============================================================
    Form controls
    ============================================================= */

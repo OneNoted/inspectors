@@ -26,6 +26,9 @@ class ComputerUseClient:
     def list_adapters(self) -> Any:
         return self._request("/api/adapters")
 
+    def reclaim_storage(self, mode: str = "report") -> Any:
+        return self._request("/api/storage/reclaim", "POST", {"mode": mode})
+
     def create_session(self, provider: str = "qemu", width: int = 1440, height: int = 900, **options: Any) -> Any:
         payload = {"provider": provider, "width": width, "height": height, **options}
         return self._request("/api/sessions", "POST", payload)
@@ -35,6 +38,9 @@ class ComputerUseClient:
 
     def get_observation(self, session_id: str) -> Any:
         return self._request(f"/api/sessions/{session_id}/observation")
+
+    def export_review_bundle(self, session_id: str) -> Any:
+        return self._request(f"/api/sessions/{session_id}/review/export", "POST", {})
 
     def get_available_actions(self, session_id: str) -> Any:
         return self._request(f"/api/sessions/{session_id}/actions")

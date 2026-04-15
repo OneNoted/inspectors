@@ -6,4 +6,5 @@ test('client exposes expected methods', () => {
   const client = new ComputerUseClient('http://localhost:3000');
   assert.equal(typeof client.createSession, 'function');
   assert.equal(typeof client.performAction, 'function');
+  assert.equal(typeof client.reclaimStorage, 'function');
 });
