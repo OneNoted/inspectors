@@ -57,7 +57,6 @@ def export_review_bundle(session_id: str) -> dict:
         if not (bundle_path / required_name).exists():
             raise SystemExit(f"expected exported review bundle to contain {required_name}: {bundle_path}")
     return {
-        "payload": payload,
         "path": str(bundle_path),
         "manifest_path": str(bundle_path / "review.json"),
         "timeline_path": str(bundle_path / "timeline.jsonl"),
@@ -167,8 +166,6 @@ result = {
         "after_sha256": after_hash,
     },
 }
-Path("artifacts/qemu-live-view-demo.json").write_text(json.dumps(result, indent=2))
-
 try:
     client._request(f"/api/tasks/{task_id}/complete", "POST", {})
 except Exception:

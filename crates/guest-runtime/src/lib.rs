@@ -60,6 +60,7 @@ struct SessionHandle {
     backend: Option<LinuxBackend>,
     provider_handle: SessionProviderHandle,
     remote_bridge: Option<RemoteBridgeHandle>,
+    review_write_lock: Arc<Mutex<()>>,
 }
 
 enum SessionProviderHandle {
@@ -627,7 +628,10 @@ fn review_event_captures_screenshot(kind: &str) -> bool {
 }
 
 fn review_event_needs_settle_frame(kind: &str) -> bool {
-    matches!(kind, "action_failed" | "bridge_state_changed" | "readiness_changed")
+    matches!(
+        kind,
+        "action_failed" | "bridge_state_changed" | "readiness_changed"
+    )
 }
 
 fn stable_content_hash(bytes: &[u8]) -> String {
@@ -650,7 +654,10 @@ fn approximate_directory_size(path: &Path) -> u64 {
             if entry_path.is_dir() {
                 approximate_directory_size(&entry_path)
             } else {
-                entry_path.metadata().map(|metadata| metadata.len()).unwrap_or(0)
+                entry_path
+                    .metadata()
+                    .map(|metadata| metadata.len())
+                    .unwrap_or(0)
             }
         })
         .sum()
@@ -1200,13 +1207,18 @@ fn new_review_event(
         status: request.status.clone(),
         bridge_status: record.bridge_status.clone(),
         readiness_state: record.readiness_state.clone(),
-        receipt_id: request.receipt.as_ref().map(|receipt| receipt.receipt_id.clone()),
+        receipt_id: request
+            .receipt
+            .as_ref()
+            .map(|receipt| receipt.receipt_id.clone()),
         screenshot,
         details: request.details.clone().unwrap_or_else(|| json!({})),
     }
 }
 
-async fn ensure_review_bundle(record: &SessionRecord) -> Result<ReviewBundleManifest, StructuredError> {
+async fn ensure_review_bundle(
+    record: &SessionRecord,
+) -> Result<ReviewBundleManifest, StructuredError> {
     let artifacts_dir = Path::new(&record.artifacts_dir);
     if let Some(manifest) = read_review_manifest(artifacts_dir) {
         return Ok(manifest);
@@ -1245,15 +1257,14 @@ async fn ensure_review_bundle(record: &SessionRecord) -> Result<ReviewBundleMani
         review_timeline_path(artifacts_dir),
         format!(
             "{}\n",
-            serde_json::to_string(&initial_event)
-                .map_err(|error| StructuredError {
-                    code: "review_recording_init_failed".to_string(),
-                    message: error.to_string(),
-                    retryable: false,
-                    category: "storage".to_string(),
-                    details: json!({ "session_id": record.id.clone() }),
-                    artifact_refs: vec![],
-                })?
+            serde_json::to_string(&initial_event).map_err(|error| StructuredError {
+                code: "review_recording_init_failed".to_string(),
+                message: error.to_string(),
+                retryable: false,
+                category: "storage".to_string(),
+                details: json!({ "session_id": record.id.clone() }),
+                artifact_refs: vec![],
+            })?
         ),
     )
     .await
@@ -1299,7 +1310,10 @@ async fn capture_review_screenshot_bytes(
     if let Some(backend) = session.backend.as_ref() {
         return backend.screenshot_png().await.ok().map(|(bytes, _)| bytes);
     }
-    let remote_bridge = session.remote_bridge.as_ref().and_then(ready_remote_bridge)?;
+    let remote_bridge = session
+        .remote_bridge
+        .as_ref()
+        .and_then(ready_remote_bridge)?;
     let remote_session_id = remote_bridge.session_id.as_ref()?;
     let response = client
         .get(format!(
@@ -1412,13 +1426,14 @@ async fn append_review_event_to_bundle(
     manifest.live_desktop_view = derive_live_desktop_view(record);
     manifest.last_captured_at = Some(event.captured_at);
 
-    if matches!(request.kind.as_str(), "action_failed" | "bridge_state_changed")
-        || request.status.as_deref() == Some("error")
+    if matches!(
+        request.kind.as_str(),
+        "action_failed" | "bridge_state_changed"
+    ) || request.status.as_deref() == Some("error")
     {
         manifest.retention = "temporary_postmortem_pin".to_string();
-        manifest.postmortem_retained_until = Some(
-            chrono::Utc::now() + chrono::Duration::seconds(REVIEW_POSTMORTEM_TTL_SECS),
-        );
+        manifest.postmortem_retained_until =
+            Some(chrono::Utc::now() + chrono::Duration::seconds(REVIEW_POSTMORTEM_TTL_SECS));
     }
 
     if review_event_needs_settle_frame(&request.kind)
@@ -1443,7 +1458,8 @@ async fn append_review_event_to_bundle(
                         "parent_event_id": request.event_id,
                     })),
                 };
-                let settle_event = new_review_event(record, &manifest, &settle_request, Some(artifact));
+                let settle_event =
+                    new_review_event(record, &manifest, &settle_request, Some(artifact));
                 let settle_serialized =
                     serde_json::to_string(&settle_event).map_err(|error| StructuredError {
                         code: "review_event_encode_failed".to_string(),
@@ -1499,9 +1515,11 @@ async fn append_review_event(
             details: json!({ "session_id": session_id }),
             artifact_refs: vec![],
         })?;
+    let review_guard = session.review_write_lock.lock().await;
     let summary =
         append_review_event_to_bundle(&state.http_client, &session.record, Some(&session), request)
             .await?;
+    drop(review_guard);
     let mut guard = state.sessions.lock().await;
     if let Some(handle) = guard.get_mut(session_id) {
         handle.record.review_recording = Some(summary.clone());
@@ -1523,6 +1541,7 @@ async fn append_review_event_from_sessions(
             record: handle.record.clone(),
             backend: handle.backend.clone(),
             remote_bridge: handle.remote_bridge.clone(),
+            review_write_lock: handle.review_write_lock.clone(),
         })
         .ok_or_else(|| StructuredError {
             code: "session_not_found".to_string(),
@@ -1532,8 +1551,10 @@ async fn append_review_event_from_sessions(
             details: json!({ "session_id": session_id }),
             artifact_refs: vec![],
         })?;
+    let review_guard = session.review_write_lock.lock().await;
     let summary =
         append_review_event_to_bundle(client, &session.record, Some(&session), request).await?;
+    drop(review_guard);
     let mut guard = sessions.lock().await;
     if let Some(handle) = guard.get_mut(session_id) {
         handle.record.review_recording = Some(summary.clone());
@@ -1559,37 +1580,74 @@ async fn export_review_bundle_for_record(
             details: json!({ "path": export_dir }),
             artifact_refs: vec![],
         })?;
-    tokio::fs::copy(review_timeline_path(artifacts_dir), export_dir.join(REVIEW_TIMELINE_FILE))
+    let timeline = tokio::fs::read_to_string(review_timeline_path(artifacts_dir))
         .await
         .map_err(|error| StructuredError {
             code: "review_export_failed".to_string(),
             message: error.to_string(),
             retryable: false,
             category: "storage".to_string(),
-            details: json!({ "path": export_dir.join(REVIEW_TIMELINE_FILE) }),
+            details: json!({ "path": review_timeline_path(artifacts_dir) }),
             artifact_refs: vec![],
         })?;
-    if let Ok(entries) = std::fs::read_dir(review_screenshots_root(artifacts_dir)) {
-        for entry in entries.flatten() {
-            let source = entry.path();
-            if !source.is_file() {
-                continue;
-            }
+    let mut exported_lines = Vec::new();
+    for line in timeline.lines().filter(|line| !line.trim().is_empty()) {
+        let mut event: ReviewTimelineEvent =
+            serde_json::from_str(line).map_err(|error| StructuredError {
+                code: "review_export_failed".to_string(),
+                message: error.to_string(),
+                retryable: false,
+                category: "storage".to_string(),
+                details: json!({ "line": line }),
+                artifact_refs: vec![],
+            })?;
+        if let Some(screenshot) = event.screenshot.as_mut() {
+            let source = PathBuf::from(&screenshot.path);
             let Some(file_name) = source.file_name() else {
-                continue;
-            };
-            let destination = export_dir.join(REVIEW_SCREENSHOTS_DIR).join(file_name);
-            copy_or_link_file(&source, &destination)
-                .map_err(|error| StructuredError {
+                return Err(StructuredError {
                     code: "review_export_failed".to_string(),
-                    message: error.to_string(),
+                    message: "review screenshot path is missing a filename".to_string(),
                     retryable: false,
                     category: "storage".to_string(),
-                    details: json!({ "path": destination }),
+                    details: json!({ "path": screenshot.path }),
                     artifact_refs: vec![],
-                })?;
+                });
+            };
+            let destination = export_dir.join(REVIEW_SCREENSHOTS_DIR).join(file_name);
+            copy_or_link_file(&source, &destination).map_err(|error| StructuredError {
+                code: "review_export_failed".to_string(),
+                message: error.to_string(),
+                retryable: false,
+                category: "storage".to_string(),
+                details: json!({ "path": destination }),
+                artifact_refs: vec![],
+            })?;
+            screenshot.path = destination.to_string_lossy().to_string();
         }
+        exported_lines.push(
+            serde_json::to_string(&event).map_err(|error| StructuredError {
+                code: "review_export_failed".to_string(),
+                message: error.to_string(),
+                retryable: false,
+                category: "storage".to_string(),
+                details: json!({ "event_id": event.event_id }),
+                artifact_refs: vec![],
+            })?,
+        );
     }
+    tokio::fs::write(
+        export_dir.join(REVIEW_TIMELINE_FILE),
+        format!("{}\n", exported_lines.join("\n")),
+    )
+    .await
+    .map_err(|error| StructuredError {
+        code: "review_export_failed".to_string(),
+        message: error.to_string(),
+        retryable: false,
+        category: "storage".to_string(),
+        details: json!({ "path": export_dir.join(REVIEW_TIMELINE_FILE) }),
+        artifact_refs: vec![],
+    })?;
     manifest.exported_at = Some(chrono::Utc::now());
     manifest.exported_bundle = Some(ArtifactRef {
         kind: "review_bundle".to_string(),
@@ -1742,6 +1800,7 @@ async fn create_xvfb_session(
             backend: Some(backend),
             provider_handle: SessionProviderHandle::Xvfb { child },
             remote_bridge: None,
+            review_write_lock: Arc::new(Mutex::new(())),
         },
     );
 
@@ -1820,6 +1879,7 @@ async fn create_existing_display_session(
             backend: Some(backend),
             provider_handle: SessionProviderHandle::ExistingDisplay,
             remote_bridge: None,
+            review_write_lock: Arc::new(Mutex::new(())),
         },
     );
 
@@ -2070,6 +2130,7 @@ async fn create_qemu_session(
                     base_url: base_url.clone(),
                     session_id: None,
                 }),
+            review_write_lock: Arc::new(Mutex::new(())),
         },
     );
 
@@ -2181,7 +2242,7 @@ async fn monitor_qemu_bridge(monitor: QemuBridgeMonitor) {
             "/health",
             None,
         )
-            .await;
+        .await;
         match health {
             Ok(_) => {
                 let mut bridge_attached_changed = false;
@@ -2267,7 +2328,10 @@ async fn monitor_qemu_bridge(monitor: QemuBridgeMonitor) {
                         drop(guard);
                         if bridge_status_changed {
                             let request = AppendReviewEventRequest {
-                                event_id: format!("{}:bridge-status-runtime-ready", monitor.session_id),
+                                event_id: format!(
+                                    "{}:bridge-status-runtime-ready",
+                                    monitor.session_id
+                                ),
                                 source: "guest-runtime".to_string(),
                                 kind: "bridge_state_changed".to_string(),
                                 task_id: None,
@@ -3046,7 +3110,9 @@ async fn delete_session(State(state): State<AppState>, AxumPath(id): AxumPath<St
                     record: handle.record.clone(),
                     backend: handle.backend.clone(),
                     remote_bridge: handle.remote_bridge.clone(),
+                    review_write_lock: handle.review_write_lock.clone(),
                 };
+                let review_guard = session.review_write_lock.lock().await;
                 let request = AppendReviewEventRequest {
                     event_id: format!("{}:final-state", handle.record.id),
                     source: "guest-runtime".to_string(),
@@ -3057,11 +3123,17 @@ async fn delete_session(State(state): State<AppState>, AxumPath(id): AxumPath<St
                     receipt: None,
                     details: Some(json!({ "state": handle.record.state.clone() })),
                 };
-                if let Ok(summary) =
-                    append_review_event_to_bundle(&state.http_client, &session.record, Some(&session), &request).await
+                if let Ok(summary) = append_review_event_to_bundle(
+                    &state.http_client,
+                    &session.record,
+                    Some(&session),
+                    &request,
+                )
+                .await
                 {
                     handle.record.review_recording = Some(summary);
                 }
+                drop(review_guard);
             }
             if let Some(remote_bridge) = handle.remote_bridge.as_ref() {
                 if let Some(remote_session_id) = remote_bridge.session_id.as_ref() {
@@ -3084,13 +3156,12 @@ async fn delete_session(State(state): State<AppState>, AxumPath(id): AxumPath<St
                     let _ = docker_output(&["rm", "-f", "-v", container_name]).await;
                 }
             }
-            let keep_postmortem =
-                handle
-                    .record
-                    .review_recording
-                    .as_ref()
-                    .and_then(|review| review.postmortem_retained_until)
-                    .is_some_and(|deadline| deadline > chrono::Utc::now());
+            let keep_postmortem = handle
+                .record
+                .review_recording
+                .as_ref()
+                .and_then(|review| review.postmortem_retained_until)
+                .is_some_and(|deadline| deadline > chrono::Utc::now());
             if !keep_postmortem {
                 remove_runtime_directory(&artifacts_dir).await;
             }
@@ -3212,7 +3283,7 @@ async fn export_review_bundle_route(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    let session = match session_snapshot(&state, &id).await {
+    let session = match session_clone(&state, &id).await {
         Some(session) => session,
         None => {
             return (
@@ -3222,7 +3293,7 @@ async fn export_review_bundle_route(
                 .into_response();
         }
     };
-    if !supports_review_recording(&session) {
+    if !supports_review_recording(&session.record) {
         return (
             StatusCode::CONFLICT,
             Json(json!({
@@ -3233,8 +3304,10 @@ async fn export_review_bundle_route(
         )
             .into_response();
     }
-    match export_review_bundle_for_record(&state.artifacts_root, &session).await {
+    let review_guard = session.review_write_lock.lock().await;
+    match export_review_bundle_for_record(&state.artifacts_root, &session.record).await {
         Ok(review_recording) => {
+            drop(review_guard);
             let bundle = review_recording.exported_bundle.clone();
             let mut guard = state.sessions.lock().await;
             if let Some(handle) = guard.get_mut(&id) {
@@ -3249,7 +3322,10 @@ async fn export_review_bundle_route(
             )
                 .into_response()
         }
-        Err(error) => (StatusCode::CONFLICT, Json(json!({ "error": error }))).into_response(),
+        Err(error) => {
+            drop(review_guard);
+            (StatusCode::CONFLICT, Json(json!({ "error": error }))).into_response()
+        }
     }
 }
 
@@ -3433,6 +3509,7 @@ async fn session_clone(state: &AppState, id: &str) -> Option<SessionHandleClone>
             record: handle.record.clone(),
             backend: handle.backend.clone(),
             remote_bridge: handle.remote_bridge.clone(),
+            review_write_lock: handle.review_write_lock.clone(),
         })
 }
 
@@ -3440,6 +3517,7 @@ struct SessionHandleClone {
     record: SessionRecord,
     backend: Option<LinuxBackend>,
     remote_bridge: Option<RemoteBridgeHandle>,
+    review_write_lock: Arc<Mutex<()>>,
 }
 
 fn runtime_capabilities(provider: &str, enrichments: Vec<String>) -> RuntimeCapabilities {
@@ -3475,16 +3553,23 @@ async fn candidate_displays(state: &AppState) -> Vec<String> {
 mod tests {
     use super::{
         AppendReviewEventRequest, QEMU_PRODUCT_DESKTOP_HOME, QEMU_PRODUCT_DESKTOP_USER,
-        QEMU_PRODUCT_RUNTIME_DIR, QemuContainerSpec, QemuLaunchMode, SessionRecord,
+        QEMU_PRODUCT_RUNTIME_DIR, QemuContainerSpec, QemuLaunchMode, ReviewTimelineEvent,
+        SessionHandle, SessionProviderHandle, SessionRecord, append_review_event_from_sessions,
         append_review_event_to_bundle, derive_live_desktop_view, derive_review_recording,
-        docker_run_args, enrich_session_record, merge_capabilities, parse_published_port,
-        postmortem_retention_active, review_summary_from_manifest, resolve_qemu_endpoint,
+        docker_run_args, enrich_session_record, ensure_review_bundle,
+        export_review_bundle_for_record, merge_capabilities, parse_published_port,
+        postmortem_retention_active, read_review_manifest, resolve_qemu_endpoint,
+        review_screenshots_root, review_summary_from_manifest, review_timeline_path,
         should_retry_qemu_without_published_ports, stable_content_hash, store_review_screenshot,
+        write_review_manifest,
     };
-    use desktop_core::ReviewRecordingSummary;
     use chrono::Utc;
+    use desktop_core::{ArtifactRef, ReviewRecordingSummary};
     use reqwest::Client;
+    use std::collections::HashMap;
     use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
     use uuid::Uuid;
 
     fn temp_test_dir(prefix: &str) -> PathBuf {
@@ -3742,10 +3827,12 @@ mod tests {
             .await
             .expect("review screenshots");
         let bytes = vec![1_u8, 2, 3, 4];
-        let (_, inserted_first, first_hash) =
-            store_review_screenshot(&temp, &bytes).await.expect("store first");
-        let (_, inserted_second, second_hash) =
-            store_review_screenshot(&temp, &bytes).await.expect("store second");
+        let (_, inserted_first, first_hash) = store_review_screenshot(&temp, &bytes)
+            .await
+            .expect("store first");
+        let (_, inserted_second, second_hash) = store_review_screenshot(&temp, &bytes)
+            .await
+            .expect("store second");
         assert!(inserted_first);
         assert!(!inserted_second);
         assert_eq!(first_hash, second_hash);
@@ -3852,6 +3939,168 @@ mod tests {
         assert!(postmortem_retention_active(&temp));
         let summary = review_summary_from_manifest(&manifest);
         assert_eq!(summary.retention, "temporary_postmortem_pin");
+        std::fs::remove_dir_all(temp).expect("cleanup temp");
+    }
+
+    #[tokio::test]
+    async fn export_rewrites_review_screenshot_paths_into_the_bundle() {
+        let temp = temp_test_dir("guest-runtime-review-export");
+        let runtime_root = temp.join("runtime");
+        let artifacts_dir = runtime_root.join("qemu-product");
+        tokio::fs::create_dir_all(&artifacts_dir)
+            .await
+            .expect("artifacts dir");
+        let record = SessionRecord {
+            id: "qemu-product".to_string(),
+            provider: "qemu".to_string(),
+            qemu_profile: Some("product".to_string()),
+            display: None,
+            width: 1440,
+            height: 900,
+            state: "running".to_string(),
+            created_at: Utc::now(),
+            artifacts_dir: artifacts_dir.to_string_lossy().to_string(),
+            capabilities: vec!["viewer".to_string()],
+            browser_command: Some("firefox".to_string()),
+            desktop_user: Some(QEMU_PRODUCT_DESKTOP_USER.to_string()),
+            desktop_home: Some(QEMU_PRODUCT_DESKTOP_HOME.to_string()),
+            desktop_runtime_dir: Some(QEMU_PRODUCT_RUNTIME_DIR.to_string()),
+            runtime_base_url: None,
+            viewer_url: Some("http://127.0.0.1:32771".to_string()),
+            live_desktop_view: None,
+            review_recording: None,
+            bridge_status: Some("runtime_ready".to_string()),
+            readiness_state: Some("runtime_ready".to_string()),
+            bridge_error: None,
+        };
+        let manifest = ensure_review_bundle(&record)
+            .await
+            .expect("ensure review bundle");
+        let screenshot_path = review_screenshots_root(&artifacts_dir).join("deadbeef.png");
+        tokio::fs::write(&screenshot_path, [1_u8, 2, 3, 4])
+            .await
+            .expect("write screenshot");
+        let event = ReviewTimelineEvent {
+            sequence: manifest.event_count + 1,
+            event_id: "manual-screenshot".to_string(),
+            source: "guest-runtime".to_string(),
+            kind: "action_completed".to_string(),
+            captured_at: Utc::now(),
+            task_id: None,
+            action_type: Some("run_command".to_string()),
+            status: Some("ok".to_string()),
+            bridge_status: Some("runtime_ready".to_string()),
+            readiness_state: Some("runtime_ready".to_string()),
+            receipt_id: None,
+            screenshot: Some(ArtifactRef {
+                kind: "review_screenshot".to_string(),
+                path: screenshot_path.to_string_lossy().to_string(),
+                mime_type: Some("image/png".to_string()),
+            }),
+            details: serde_json::json!({}),
+        };
+        let serialized = serde_json::to_string(&event).expect("serialize event");
+        let mut file = tokio::fs::OpenOptions::new()
+            .append(true)
+            .open(review_timeline_path(&artifacts_dir))
+            .await
+            .expect("open timeline");
+        use tokio::io::AsyncWriteExt;
+        file.write_all(format!("{serialized}\n").as_bytes())
+            .await
+            .expect("append timeline");
+        let mut manifest = read_review_manifest(&artifacts_dir).expect("manifest");
+        manifest.event_count += 1;
+        manifest.screenshot_count += 1;
+        write_review_manifest(&artifacts_dir, &manifest)
+            .await
+            .expect("write manifest");
+
+        let summary = export_review_bundle_for_record(&runtime_root, &record)
+            .await
+            .expect("export bundle");
+        let export_path = PathBuf::from(summary.exported_bundle.expect("exported bundle").path);
+        let export_timeline = std::fs::read_to_string(export_path.join("timeline.jsonl"))
+            .expect("read exported timeline");
+        assert!(
+            export_timeline.contains(
+                export_path
+                    .join("screenshots/deadbeef.png")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        std::fs::remove_dir_all(temp).expect("cleanup temp");
+    }
+
+    #[tokio::test]
+    async fn append_review_event_from_sessions_serializes_concurrent_writes() {
+        let temp = temp_test_dir("guest-runtime-review-lock");
+        let record = SessionRecord {
+            id: "qemu-product".to_string(),
+            provider: "qemu".to_string(),
+            qemu_profile: Some("product".to_string()),
+            display: None,
+            width: 1440,
+            height: 900,
+            state: "running".to_string(),
+            created_at: Utc::now(),
+            artifacts_dir: temp.to_string_lossy().to_string(),
+            capabilities: vec!["viewer".to_string()],
+            browser_command: Some("firefox".to_string()),
+            desktop_user: Some(QEMU_PRODUCT_DESKTOP_USER.to_string()),
+            desktop_home: Some(QEMU_PRODUCT_DESKTOP_HOME.to_string()),
+            desktop_runtime_dir: Some(QEMU_PRODUCT_RUNTIME_DIR.to_string()),
+            runtime_base_url: None,
+            viewer_url: Some("http://127.0.0.1:32771".to_string()),
+            live_desktop_view: None,
+            review_recording: None,
+            bridge_status: Some("runtime_ready".to_string()),
+            readiness_state: Some("runtime_ready".to_string()),
+            bridge_error: None,
+        };
+        let sessions = Arc::new(Mutex::new(HashMap::from([(
+            "qemu-product".to_string(),
+            SessionHandle {
+                record: record.clone(),
+                backend: None,
+                provider_handle: SessionProviderHandle::ExistingDisplay,
+                remote_bridge: None,
+                review_write_lock: Arc::new(Mutex::new(())),
+            },
+        )])));
+        let client = Client::new();
+        let request_a = AppendReviewEventRequest {
+            event_id: "task-created:a".to_string(),
+            source: "control-plane".to_string(),
+            kind: "task_created".to_string(),
+            task_id: Some("task-a".to_string()),
+            action_type: None,
+            status: None,
+            receipt: None,
+            details: Some(serde_json::json!({ "description": "a" })),
+        };
+        let request_b = AppendReviewEventRequest {
+            event_id: "task-created:b".to_string(),
+            source: "control-plane".to_string(),
+            kind: "task_created".to_string(),
+            task_id: Some("task-b".to_string()),
+            action_type: None,
+            status: None,
+            receipt: None,
+            details: Some(serde_json::json!({ "description": "b" })),
+        };
+        let _ = tokio::join!(
+            append_review_event_from_sessions(&sessions, &client, "qemu-product", &request_a),
+            append_review_event_from_sessions(&sessions, &client, "qemu-product", &request_b),
+        );
+        let timeline = std::fs::read_to_string(review_timeline_path(&temp)).expect("read timeline");
+        let sequences = timeline
+            .lines()
+            .filter_map(|line| serde_json::from_str::<ReviewTimelineEvent>(line).ok())
+            .map(|event| event.sequence)
+            .collect::<Vec<_>>();
+        assert_eq!(sequences, vec![1, 2, 3]);
         std::fs::remove_dir_all(temp).expect("cleanup temp");
     }
 }

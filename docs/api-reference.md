@@ -92,34 +92,6 @@ Default storage semantics:
 - reusable qemu assets stay under cache,
 - retained evidence should be treated as explicit export/pin state.
 
-### `POST /api/sessions/:id/review/export`
-Export the current sparse review bundle for a qemu `product` session into durable storage.
-
-Response shape:
-```json
-{
-  "bundle": {
-    "kind": "review_bundle",
-    "path": "/absolute/path/to/artifacts/exports/<session-id>-review"
-  },
-  "review_recording": {
-    "mode": "sparse_timeline",
-    "status": "exported",
-    "retention": "ephemeral_until_export",
-    "event_count": 12,
-    "screenshot_count": 4,
-    "approx_bytes": 183421,
-    "exportable": true,
-    "exported_bundle": {
-      "kind": "review_bundle",
-      "path": "/absolute/path/to/artifacts/exports/<session-id>-review"
-    }
-  }
-}
-```
-
-The exported directory is the durable review artifact. In v1 it contains a sparse bundle (`review.json`, `timeline.jsonl`, deduplicated screenshots) rather than a recorded video. Export before teardown if you want the review artifact to survive session deletion.
-
 ### `GET /api/sessions/:id/observation`
 Return the latest desktop observation, including `summary`, `raw`, screenshot metadata, and action history.
 
@@ -158,14 +130,14 @@ Session metadata may also include:
 V1 review recording is intentionally **not** default video capture. Inspectors records a sparse review bundle for qemu `product` sessions: `review.json`, `timeline.jsonl`, and deduplicated screenshots stored only at meaningful action/state boundaries.
 
 ### `POST /api/sessions/:id/review/export`
-Export the current sparse review bundle into the durable `artifacts/exports/` tier.
+Export the current sparse review bundle into the durable `artifacts/exports/` tier. This route is available for qemu `product` sessions in v1.
 
 Response example:
 ```json
 {
   "bundle": {
     "kind": "review_bundle",
-    "path": "artifacts/exports/<session-id>-review",
+    "path": "/absolute/path/to/artifacts/exports/<session-id>-review",
     "mime_type": null
   },
   "review_recording": {
@@ -179,7 +151,7 @@ Response example:
     "exportable": true,
     "exported_bundle": {
       "kind": "review_bundle",
-      "path": "artifacts/exports/<session-id>-review",
+      "path": "/absolute/path/to/artifacts/exports/<session-id>-review",
       "mime_type": null
     },
     "postmortem_retained_until": null,

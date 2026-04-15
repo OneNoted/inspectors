@@ -34,13 +34,10 @@
 - Clear split between `raw` machine observations and `summary` fields intended for models/operators.
 - QEMU sessions stay honest: pre-ready sessions return structured bridge-unavailable errors instead of synthetic screenshots.
 - The oversight UI renders from `live_desktop_view` metadata so it can distinguish real live desktop, screenshot fallback, and unavailable states without guessing from `viewer_url`.
-- QEMU product sessions can also emit a storage-efficient `review_recording` summary backed by a sparse review bundle (`review.json`, `timeline.jsonl`, deduplicated screenshots) for later human review.
 
 ## Action strategy
 - Rust guest-runtime handles desktop input, shell/filesystem, app launch, and screenshot capture.
-- Rust guest-runtime is also the sole writer of the canonical review timeline; other layers submit append requests instead of writing bundle files directly.
 - TypeScript control plane layers on task tracking and browser specialization.
-- The control plane exposes review export and forwards browser/task metadata into the canonical review ledger when those actions do not originate inside guest-runtime.
 - Every action returns a structured receipt or structured error envelope.
 - For QEMU, shell/filesystem/desktop actions go through the guest runtime as the single primary plane.
 
@@ -56,5 +53,4 @@
 - Guest bootstrap must be deterministic enough to promote sessions to `runtime_ready` automatically.
 - QEMU bootstrap/health failures must emit actionable artifacts/logs.
 - Startup cleanup should only reap inspectors-owned runtime state after liveness checks; reusable cache and explicit exports are excluded.
-- Failed qemu product sessions may temporarily pin runtime review data for postmortem inspection, but exported bundles remain the only durable retention tier.
 - Future work can replace the transport with vsock/VM-native plumbing without changing the external contract.
